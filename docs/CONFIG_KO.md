@@ -13,9 +13,15 @@
 ```env
 BITHUMB_API_KEY=...
 BITHUMB_SECRET_KEY=...
+BYBIT_API_KEY=...
+BYBIT_API_SECRET=...
 GEMINI_API_KEY=...
 BITHUMB_API_BASE_URL=https://api.bithumb.com
 ```
+
+거래소 선택:
+- `config.yaml`의 `exchange.provider`를 `bithumb` 또는 `bybit`로 설정
+- Bybit를 쓰면 `bybit.enabled: true`로 두는 것을 권장
 
 ## 2. 실행 방법
 
@@ -49,6 +55,7 @@ BITHUMB_API_BASE_URL=https://api.bithumb.com
 
 ### 매수 강도
 - `llm.min_buy_confidence`: Gemini 신뢰도 하한
+- `llm.min_sell_confidence`: 숏(SELL) 신뢰도 하한
 - `llm.max_dead_cat_risk`: 데드캣 리스크 허용치 상한
 - `strategy.required_signal_count`: 하드룰 충족 최소 개수(3개 지표 중)
 - `llm.allow_hold_buy`: Gemini가 HOLD여도 조건부 매수 허용 여부
@@ -67,6 +74,14 @@ BITHUMB_API_BASE_URL=https://api.bithumb.com
 - `trade.order_fill_wait_sec`: 주문 체결 대기 시간(초)
 - `trade.order_fill_poll_sec`: 체결 상태 조회 주기(초)
 - `trade.cancel_unfilled_before_retry`: 미체결 주문 취소 후 재주문 여부
+
+### 롱/숏(Bybit)
+- `bybit.allow_long`: 롱 진입 허용
+- `bybit.allow_short`: 숏 진입 허용
+- `bybit.leverage`: 기본 레버리지
+- `bybit.short_min_advanced_score`: 숏 진입 최소 고급 시그널 절대값
+- `strategy.rsi_sell_threshold`: 숏 하드룰 RSI 기준
+- `strategy.use_macd_dead_cross`: 숏 하드룰 MACD 데드크로스 사용 여부
 
 ### 운영
 - `app.dry_run`: `true`면 주문 없이 로그만 출력
@@ -129,6 +144,10 @@ BITHUMB_API_BASE_URL=https://api.bithumb.com
 
 - `app.dry_run: false`
 - `app.enable_official_orders: true`
+
+Bybit는 아래도 함께 확인:
+- `exchange.provider: bybit`
+- `bybit.enabled: true`
 
 주의: 실거래는 손실 위험이 있으므로 반드시 소액으로 테스트 후 확대하세요.
 

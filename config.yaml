@@ -14,11 +14,24 @@ app:
   performance_baseline_path: data/performance_baseline.json
 
 exchange:
+  provider: bithumb
   sample_ticker: KRW-BTC
   quote_currency: KRW
   public_retry_count: 2
   public_retry_delay_sec: 0.2
   timeout_sec: 8.0
+
+bybit:
+  enabled: false
+  base_url: https://api.bybit.com
+  category: linear
+  quote_coin: USDT
+  account_type: UNIFIED
+  recv_window: 5000
+  leverage: 2.0
+  allow_long: true
+  allow_short: true
+  short_min_advanced_score: 1.2
 
 collector:
   top_n: 15
@@ -53,17 +66,20 @@ strategy:
   min_data_rows: 35
   required_signal_count: 1
   rsi_buy_threshold: 30.0
+  rsi_sell_threshold: 70.0
   bollinger_touch_tolerance_pct: 0.0
   use_macd_golden_cross: true
+  use_macd_dead_cross: true
 
 llm:
   model_name: gemini-2.5-flash
   min_buy_confidence: 0.6
+  min_sell_confidence: 0.6
   max_dead_cat_risk: 0.55
   allow_hold_buy: true
   hold_buy_min_confidence: 0.65
-  hold_buy_max_dead_cat_risk: 0.85
-  hold_buy_min_advanced_score: 1.5
+  hold_buy_max_dead_cat_risk: 0.9
+  hold_buy_min_advanced_score: 1.3
 
 trade:
   seed_krw: 70000
@@ -84,7 +100,7 @@ risk:
 
 advanced:
   enabled: true
-  min_total_score: 1.3
+  min_total_score: 1.2
   support_resistance_weight: 0.6
   pattern_weight: 0.5
   orderbook_weight: 0.7
