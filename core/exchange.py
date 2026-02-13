@@ -384,19 +384,28 @@ class BithumbExchange:
         return [ticker for _, ticker in scored[:limit]]
 
     def get_bithumb_notices(self, page: int = 1, limit: int = 20) -> list[dict[str, Any]]:
-        """Fetch Bithumb service center notices."""
-        data = self._public_get(
-            "/v1/service_center/notice",
-            {"page": page, "limit": limit},
-        )
+        """Fetch Bithumb notices.
+
+        Official v2.1.5 docs endpoint:
+        - GET /v1/notices
+        """
+        data = self._public_get("/v1/notices")
+        rows: list[dict[str, Any]] = []
         if isinstance(data, list):
-            return [row for row in data if isinstance(row, dict)]
-        if isinstance(data, dict):
+            rows = [row for row in data if isinstance(row, dict)]
+        elif isinstance(data, dict):
             for key in ("data", "content", "list", "items"):
                 value = data.get(key)
                 if isinstance(value, list):
-                    return [row for row in value if isinstance(row, dict)]
-        return []
+                    rows = [row for row in value if isinstance(row, dict)]
+                    break
+
+        if not rows:
+            return []
+
+        start = max(0, (page - 1) * limit)
+        end = start + max(1, limit)
+        return rows[start:end]
 
     def _public_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         if not self.public_api_enabled:
