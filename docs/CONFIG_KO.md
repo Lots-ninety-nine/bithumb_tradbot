@@ -83,7 +83,7 @@ DISCORD_WEBHOOK_URL=...
 - `strategy.required_signal_count`: 하드룰 최소 충족 개수
 - `strategy.rsi_buy_threshold`, `strategy.rsi_sell_threshold`
 - `strategy.use_macd_golden_cross`, `strategy.use_macd_dead_cross`
-- `llm.model_name`: 예) `gpt-4o-mini`
+- `llm.model_name`: 기본 `gpt-4.1-nano` (저렴 우선), 품질 우선 시 `gpt-4o-mini`
 - `llm.openai_base_url`: 기본 `https://api.openai.com/v1`
 - `llm.openai_timeout_sec`: OpenAI 요청 타임아웃
 - `llm.min_buy_confidence`: 롱 LLM 신뢰도 하한

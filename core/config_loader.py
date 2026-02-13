@@ -89,7 +89,7 @@ class StrategyConfig:
 @dataclass(slots=True)
 class LLMConfig:
     provider: str = "openai"
-    model_name: str = "gpt-4o-mini"
+    model_name: str = "gpt-4.1-nano"
     openai_base_url: str = "https://api.openai.com/v1"
     openai_timeout_sec: float = 12.0
     min_buy_confidence: float = 0.7
