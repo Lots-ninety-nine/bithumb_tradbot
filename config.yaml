@@ -3,10 +3,10 @@
 # - 퍼센트는 0~1 소수로 입력합니다. 예) 5% = 0.05
 
 app:
-  dry_run: true
+  dry_run: false
   interval_sec: 60
   max_consecutive_errors: 5
-  enable_official_orders: false
+  enable_official_orders: true
   log_level: INFO
   log_api_usage: true
 
@@ -59,8 +59,8 @@ llm:
   max_dead_cat_risk: 0.55
 
 trade:
-  seed_krw: 150000
-  slot_count: 3
+  seed_krw: 70000
+  slot_count: 1
   min_order_krw: 5000
   max_spread_bps: 35.0
 
@@ -89,7 +89,7 @@ news:
   coindesk_rss_url: https://www.coindesk.com/arc/outboundfeeds/rss/
 
 notification:
-  enabled: false
+  enabled: true
   discord_webhook_url: ""
   username: BithumbTradBot
   timeout_sec: 5.0
