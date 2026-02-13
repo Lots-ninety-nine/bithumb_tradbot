@@ -7,7 +7,9 @@ from dataclasses import asdict
 from datetime import datetime
 import json
 import logging
+import math
 import time
+from typing import Any
 
 from core.exchange import BithumbExchange
 
@@ -27,9 +29,15 @@ class TradingOrchestrator:
         loop_interval_sec: int = 60,
         dry_run: bool = True,
         min_buy_confidence: float = 0.7,
+        max_spread_bps: float = 35.0,
+        min_order_krw: float = 5000.0,
+        max_consecutive_errors: int = 5,
     ) -> None:
         self.loop_interval_sec = loop_interval_sec
         self.dry_run = dry_run
+        self.max_spread_bps = max_spread_bps
+        self.min_order_krw = min_order_krw
+        self.max_consecutive_errors = max_consecutive_errors
 
         from core.llm_analyzer import GeminiAnalyzer
         from core.risk_manager import RiskManager
@@ -107,6 +115,25 @@ class TradingOrchestrator:
             if current_price <= 0:
                 continue
             quantity = self.risk.slot_budget_krw / current_price
+            order_value_krw = quantity * current_price
+            if order_value_krw < self.min_order_krw:
+                LOGGER.info(
+                    "%s skipped by min order rule value=%.2f min=%.2f",
+                    ticker,
+                    order_value_krw,
+                    self.min_order_krw,
+                )
+                continue
+
+            spread_bps = self._calc_spread_bps(snapshot.orderbook)
+            if spread_bps is not None and spread_bps > self.max_spread_bps:
+                LOGGER.info(
+                    "%s skipped by spread rule spread_bps=%.2f max=%.2f",
+                    ticker,
+                    spread_bps,
+                    self.max_spread_bps,
+                )
+                continue
 
             position = self.risk.open_position(
                 ticker=ticker,
@@ -154,12 +181,75 @@ class TradingOrchestrator:
 
     def run_forever(self) -> None:
         LOGGER.info("Trading loop started at %s", datetime.utcnow().isoformat())
+        consecutive_errors = 0
         while True:
             try:
                 self.run_once()
+                consecutive_errors = 0
             except Exception:
+                consecutive_errors += 1
                 LOGGER.exception("Unhandled error in trading loop")
+                if consecutive_errors >= self.max_consecutive_errors:
+                    LOGGER.error(
+                        "Consecutive error limit reached (%s). Cooling down for 5 minutes.",
+                        consecutive_errors,
+                    )
+                    time.sleep(300)
+                    consecutive_errors = 0
+                    continue
+                backoff = min(300, self.loop_interval_sec * math.pow(2, consecutive_errors))
+                LOGGER.info("Backoff sleep %.0f sec after error", backoff)
+                time.sleep(backoff)
+                continue
             time.sleep(self.loop_interval_sec)
+
+    @staticmethod
+    def _calc_spread_bps(orderbook: dict[str, Any] | None) -> float | None:
+        if not orderbook:
+            return None
+
+        bid_price = TradingOrchestrator._extract_best_price(orderbook, side="bid")
+        ask_price = TradingOrchestrator._extract_best_price(orderbook, side="ask")
+        if bid_price is None or ask_price is None:
+            return None
+        mid = (bid_price + ask_price) / 2.0
+        if mid <= 0:
+            return None
+        return ((ask_price - bid_price) / mid) * 10000
+
+    @staticmethod
+    def _extract_best_price(orderbook: dict[str, Any], side: str) -> float | None:
+        side_key_candidates = {
+            "bid": ["bids", "bid", "bid_price"],
+            "ask": ["asks", "ask", "ask_price"],
+        }[side]
+        for key in side_key_candidates:
+            value = orderbook.get(key)
+            if value is None:
+                continue
+
+            if isinstance(value, list) and value:
+                top = value[0]
+                if isinstance(top, dict):
+                    for price_key in ("price", "ask_price", "bid_price"):
+                        if price_key in top:
+                            try:
+                                return float(top[price_key])
+                            except Exception:
+                                continue
+            elif isinstance(value, dict):
+                for price_key in ("price", "ask_price", "bid_price"):
+                    if price_key in value:
+                        try:
+                            return float(value[price_key])
+                        except Exception:
+                            continue
+            else:
+                try:
+                    return float(value)
+                except Exception:
+                    continue
+        return None
 
 
 def parse_args() -> argparse.Namespace:
@@ -200,6 +290,24 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.7,
         help="Minimum Gemini confidence required for BUY execution.",
+    )
+    parser.add_argument(
+        "--max-spread-bps",
+        type=float,
+        default=35.0,
+        help="Max spread in bps allowed for entry.",
+    )
+    parser.add_argument(
+        "--min-order-krw",
+        type=float,
+        default=5000.0,
+        help="Minimum order notional in KRW.",
+    )
+    parser.add_argument(
+        "--max-consecutive-errors",
+        type=int,
+        default=5,
+        help="Loop cooldown trigger threshold for consecutive exceptions.",
     )
     return parser.parse_args()
 
@@ -272,6 +380,9 @@ def main() -> None:
         loop_interval_sec=args.interval,
         dry_run=not args.live,
         min_buy_confidence=args.min_buy_confidence,
+        max_spread_bps=args.max_spread_bps,
+        min_order_krw=args.min_order_krw,
+        max_consecutive_errors=args.max_consecutive_errors,
     )
     if args.run_once:
         orchestrator.run_once()

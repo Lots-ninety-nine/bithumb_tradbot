@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
+import time
 from typing import Any
 
 try:
@@ -66,8 +67,15 @@ def load_credentials(config_path: str = "config.yaml") -> ExchangeCredentials:
 class BithumbExchange:
     """Thin wrapper around pybithumb for public/private endpoints."""
 
-    def __init__(self, config_path: str = "config.yaml") -> None:
+    def __init__(
+        self,
+        config_path: str = "config.yaml",
+        public_retry_count: int = 2,
+        public_retry_delay_sec: float = 0.2,
+    ) -> None:
         self.credentials = load_credentials(config_path=config_path)
+        self.public_retry_count = public_retry_count
+        self.public_retry_delay_sec = public_retry_delay_sec
         self._private_client = None
         if pybithumb is None:
             LOGGER.warning("pybithumb is not installed. Exchange calls will be disabled.")
@@ -119,35 +127,31 @@ class BithumbExchange:
         """Fetch OHLCV dataframe from Bithumb."""
         if pybithumb is None:
             return None
-        try:
+
+        def _fetch():
             frame = pybithumb.get_ohlcv(ticker, interval=interval)
             if frame is None:
                 return None
             return frame.tail(count).copy()
-        except Exception as exc:
-            LOGGER.warning("OHLCV fetch failed for %s (%s): %s", ticker, interval, exc)
-            return None
+
+        return self._retry_public(_fetch, f"OHLCV {ticker}:{interval}")
 
     def get_orderbook(self, ticker: str) -> dict[str, Any] | None:
         """Fetch orderbook snapshot."""
         if pybithumb is None:
             return None
-        try:
-            return pybithumb.get_orderbook(ticker)
-        except Exception as exc:
-            LOGGER.warning("Orderbook fetch failed for %s: %s", ticker, exc)
-            return None
+        return self._retry_public(lambda: pybithumb.get_orderbook(ticker), f"orderbook {ticker}")
 
     def get_current_price(self, ticker: str) -> float | None:
         """Fetch current price."""
         if pybithumb is None:
             return None
-        try:
+
+        def _fetch():
             price = pybithumb.get_current_price(ticker)
             return float(price) if price is not None else None
-        except Exception as exc:
-            LOGGER.warning("Current price fetch failed for %s: %s", ticker, exc)
-            return None
+
+        return self._retry_public(_fetch, f"current_price {ticker}")
 
     def get_balance(self, ticker: str) -> Any:
         """Fetch balance for a given ticker/currency."""
@@ -186,3 +190,18 @@ class BithumbExchange:
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [ticker for _, ticker in scored[:limit]]
+
+    def _retry_public(self, fn, label: str):
+        attempts = max(1, self.public_retry_count)
+        last_exc = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return fn()
+            except Exception as exc:
+                last_exc = exc
+                LOGGER.warning("Public API failed (%s) attempt=%s/%s: %s", label, attempt, attempts, exc)
+                if attempt < attempts:
+                    time.sleep(self.public_retry_delay_sec)
+        if last_exc is not None:
+            LOGGER.warning("Public API exhausted retries (%s): %s", label, last_exc)
+        return None
