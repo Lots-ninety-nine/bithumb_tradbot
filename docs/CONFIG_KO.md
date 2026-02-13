@@ -56,6 +56,29 @@ BITHUMB_API_BASE_URL=https://api.bithumb.com
 - `app.enable_official_orders`: REST 주문 API 허용 여부
 - `app.interval_sec`: 루프 주기(초)
 
+### 뉴스/RAG
+- `news.enabled`: 뉴스 자동수집 on/off
+- `news.refresh_interval_sec`: 뉴스 갱신 주기(초)
+- `news.use_bithumb_notice`: 빗썸 공지 수집
+- `news.use_coindesk_rss`: CoinDesk RSS 수집
+- `news.use_naver_openapi`: 네이버 OpenAPI 뉴스 수집
+- `news.per_source_limit`: 소스별 최대 수집 건수
+
+### 고급 시그널
+- `advanced.enabled`: 고급 시그널 게이트 사용 여부
+- `advanced.min_total_score`: 진입 최소 점수
+- `advanced.support_resistance_weight`: 지지/저항 점수 가중치
+- `advanced.pattern_weight`: 캔들 패턴 점수 가중치
+- `advanced.orderbook_weight`: 호가 불균형 점수 가중치
+
+### 디스코드 알림
+- `notification.enabled`: 디스코드 알림 사용 여부
+- `notification.discord_webhook_url`: 웹훅 URL (또는 `.env`의 `DISCORD_WEBHOOK_URL`)
+- `notification.notify_on_startup`: 시작 알림
+- `notification.notify_on_error`: 예외 알림
+- `notification.notify_on_buy`: 매수 알림
+- `notification.notify_on_sell`: 매도 알림
+
 ## 4. 추천 시작값
 
 초기에는 아래처럼 보수적으로 시작하세요.
@@ -65,6 +88,9 @@ BITHUMB_API_BASE_URL=https://api.bithumb.com
 - `risk.stop_loss_pct: 0.03`
 - `trade.max_spread_bps: 25.0`
 - `trade.slot_count: 1`
+- `news.enabled: true`
+- `advanced.enabled: true`
+- `notification.enabled: false` (초기엔 비활성 권장)
 
 드라이런 로그를 본 뒤에만 실거래로 전환하는 걸 권장합니다.
 
@@ -76,3 +102,8 @@ BITHUMB_API_BASE_URL=https://api.bithumb.com
 - `app.enable_official_orders: true`
 
 주의: 실거래는 손실 위험이 있으므로 반드시 소액으로 테스트 후 확대하세요.
+
+## 6. 경고/오류 관련
+
+- Gemini SDK는 `google.genai` 기준으로 구성되어 `google.generativeai` deprecate 경고가 나오지 않습니다.
+- Python UTC 시간은 timezone-aware(`datetime.now(timezone.utc)`)로 처리되어 `utcnow()` 경고가 나오지 않습니다.
