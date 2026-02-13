@@ -32,6 +32,9 @@ BITHUMB_API_BASE_URL=https://api.bithumb.com
 # 디스코드 알림 테스트
 /Users/mosiwon/dev/bithumb_tradbot/.venv/bin/python /Users/mosiwon/dev/bithumb_tradbot/main.py --test-notify
 
+# 수익률 기준점(시작 자산) 초기화
+/Users/mosiwon/dev/bithumb_tradbot/.venv/bin/python /Users/mosiwon/dev/bithumb_tradbot/main.py --reset-performance
+
 # 무한 루프 실행
 /Users/mosiwon/dev/bithumb_tradbot/.venv/bin/python /Users/mosiwon/dev/bithumb_tradbot/main.py
 ```
@@ -70,6 +73,9 @@ BITHUMB_API_BASE_URL=https://api.bithumb.com
 - `app.enable_official_orders`: REST 주문 API 허용 여부
 - `app.interval_sec`: 루프 주기(초)
 - `app.log_api_usage`: 사이클마다 API 사용량 요약 로그 출력 여부
+- `app.log_performance`: 시작 자산 대비 수익률 로그 출력 여부
+- `app.performance_log_interval_sec`: 수익률 로그 출력 주기(초)
+- `app.performance_baseline_path`: 시작 자산(기준점) 저장 파일 경로
 
 ### 뉴스/RAG
 - `news.enabled`: 뉴스 자동수집 on/off

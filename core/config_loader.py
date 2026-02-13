@@ -19,6 +19,9 @@ class AppConfig:
     enable_official_orders: bool = False
     log_level: str = "INFO"
     log_api_usage: bool = True
+    log_performance: bool = True
+    performance_log_interval_sec: int = 300
+    performance_baseline_path: str = "data/performance_baseline.json"
 
 
 @dataclass(slots=True)

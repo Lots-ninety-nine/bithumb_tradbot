@@ -15,6 +15,7 @@ from typing import Any
 from core.config_loader import BotConfig, load_bot_config
 from core.exchange import BithumbExchange
 from core.notifier import DiscordNotifier, NotifyEvent
+from core.performance_tracker import PerformanceTracker
 
 
 logging.basicConfig(
@@ -49,7 +50,10 @@ class TradingOrchestrator:
         self.hold_buy_min_advanced_score = float(config.llm.hold_buy_min_advanced_score)
         self.frame_priority = tuple(config.strategy.interval_priority)
         self.log_api_usage = bool(config.app.log_api_usage)
+        self.log_performance = bool(config.app.log_performance)
+        self.performance_log_interval_sec = int(config.app.performance_log_interval_sec)
         self._started_notified = False
+        self._next_performance_log_at = 0.0
 
         from core.llm_analyzer import GeminiAnalyzer
         from core.risk_manager import RiskManager
@@ -105,6 +109,9 @@ class TradingOrchestrator:
             trailing_gap_pct=config.risk.trailing_gap_pct,
         )
         self.notifier = self._build_notifier(config=config)
+        self.performance_tracker = PerformanceTracker(
+            baseline_path=config.app.performance_baseline_path,
+        )
 
     def run_once(self) -> None:
         try:
@@ -280,6 +287,7 @@ class TradingOrchestrator:
 
             self._check_open_positions()
         finally:
+            self.log_performance_summary_if_needed()
             self.log_api_usage_summary(reset=True)
 
     def _check_open_positions(self) -> None:
@@ -494,6 +502,27 @@ class TradingOrchestrator:
             }
             LOGGER.info("API public by_path(top): %s", compact)
 
+    def log_performance_summary_if_needed(self, force: bool = False) -> None:
+        if not self.log_performance:
+            return
+        now_ts = time.time()
+        if not force and now_ts < self._next_performance_log_at:
+            return
+        self._next_performance_log_at = now_ts + self.performance_log_interval_sec
+
+        total_krw = self.exchange.get_total_asset_krw()
+        if total_krw is None or total_krw <= 0:
+            return
+        snapshot = self.performance_tracker.snapshot(current_krw=total_krw)
+        LOGGER.info(
+            "Performance since %s | baseline=%.0fKRW current=%.0fKRW pnl=%.0fKRW (%.2f%%)",
+            snapshot.started_at.isoformat(),
+            snapshot.baseline_krw,
+            snapshot.current_krw,
+            snapshot.pnl_krw,
+            snapshot.pnl_pct,
+        )
+
     def _pick_frame(self, candles: dict[str, Any]):
         for interval in self.frame_priority:
             frame = candles.get(interval)
@@ -576,6 +605,11 @@ def parse_args() -> argparse.Namespace:
         "--test-notify",
         action="store_true",
         help="디스코드 웹훅 테스트 알림 전송 후 종료",
+    )
+    parser.add_argument(
+        "--reset-performance",
+        action="store_true",
+        help="수익률 기준점(시작 자산)을 초기화하고 종료",
     )
     return parser.parse_args()
 
@@ -664,11 +698,38 @@ def main() -> None:
             enable_official_orders=config.app.enable_official_orders,
         )
         report = exchange.connectivity_report(sample_ticker=config.exchange.sample_ticker)
+        tracker = PerformanceTracker(baseline_path=config.app.performance_baseline_path)
+        total_krw = exchange.get_total_asset_krw()
+        if total_krw is not None and total_krw > 0:
+            perf = tracker.snapshot(current_krw=total_krw)
+            report["performance"] = {
+                "started_at": perf.started_at.isoformat(),
+                "baseline_krw": perf.baseline_krw,
+                "current_krw": perf.current_krw,
+                "pnl_krw": perf.pnl_krw,
+                "pnl_pct": perf.pnl_pct,
+            }
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return
 
     if args.validate_data:
         raise SystemExit(run_data_validation(config))
+
+    if args.reset_performance:
+        tracker = PerformanceTracker(baseline_path=config.app.performance_baseline_path)
+        removed = tracker.reset()
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "removed_existing_baseline": removed,
+                    "baseline_path": config.app.performance_baseline_path,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
 
     if args.test_notify:
         notifier = DiscordNotifier(

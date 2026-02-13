@@ -305,6 +305,38 @@ class BithumbExchange:
 
         return None
 
+    def get_total_asset_krw(self) -> float | None:
+        """Estimate total account asset value in KRW."""
+        if not self.private_api_enabled:
+            return None
+
+        total = 0.0
+        try:
+            accounts = self.get_accounts()
+        except Exception:
+            return None
+
+        for row in accounts:
+            currency = str(row.get("currency", "")).upper().strip()
+            if not currency:
+                continue
+            balance = self._extract_float(row, ["balance"]) or 0.0
+            locked = self._extract_float(row, ["locked"]) or 0.0
+            amount = balance + locked
+            if amount <= 0:
+                continue
+
+            if currency == self.quote_currency:
+                total += amount
+                continue
+
+            market = f"{self.quote_currency}-{currency}"
+            price = self.get_current_price(market)
+            if price is None:
+                continue
+            total += amount * float(price)
+        return total
+
     def get_order_chance(self, ticker: str) -> dict[str, Any] | None:
         """Fetch order chance info for a market."""
         market = self._normalize_market(ticker)

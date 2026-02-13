@@ -9,6 +9,9 @@ app:
   enable_official_orders: true
   log_level: INFO
   log_api_usage: true
+  log_performance: true
+  performance_log_interval_sec: 300
+  performance_baseline_path: data/performance_baseline.json
 
 exchange:
   sample_ticker: KRW-BTC
