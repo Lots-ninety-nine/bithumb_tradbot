@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 
@@ -99,7 +99,7 @@ class SimpleRAGStore:
         url: str = "",
         published_at: str | None = None,
     ) -> NewsItem:
-        ts = published_at or datetime.utcnow().isoformat()
+        ts = published_at or datetime.now(timezone.utc).isoformat()
         doc_id = f"{ticker}-{hash((title, ts, source))}"
         return NewsItem(
             id=doc_id,

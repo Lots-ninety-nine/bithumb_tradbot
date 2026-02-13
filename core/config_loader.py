@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import os
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 import yaml
 
 
@@ -46,7 +48,7 @@ class StrategyConfig:
 
 @dataclass(slots=True)
 class LLMConfig:
-    model_name: str = "gemini-1.5-flash"
+    model_name: str = "gemini-2.5-flash"
     min_buy_confidence: float = 0.7
     max_dead_cat_risk: float = 0.55
 
@@ -67,6 +69,44 @@ class RiskConfig:
 
 
 @dataclass(slots=True)
+class AdvancedSignalConfig:
+    enabled: bool = True
+    min_total_score: float = 1.5
+    support_resistance_weight: float = 0.6
+    pattern_weight: float = 0.5
+    orderbook_weight: float = 0.7
+    support_proximity_pct: float = 0.01
+    resistance_proximity_pct: float = 0.008
+    imbalance_buy_threshold: float = 0.12
+
+
+@dataclass(slots=True)
+class NewsConfig:
+    enabled: bool = True
+    refresh_interval_sec: int = 300
+    per_source_limit: int = 30
+    use_bithumb_notice: bool = True
+    use_coindesk_rss: bool = True
+    use_naver_openapi: bool = False
+    coindesk_rss_url: str = "https://www.coindesk.com/arc/outboundfeeds/rss/"
+
+
+@dataclass(slots=True)
+class NotificationConfig:
+    enabled: bool = False
+    discord_webhook_url: str = ""
+    username: str = "BithumbTradBot"
+    timeout_sec: float = 5.0
+    min_interval_sec: float = 1.0
+    notify_on_startup: bool = True
+    notify_on_error: bool = True
+    notify_on_buy: bool = True
+    notify_on_sell: bool = True
+    notify_on_risk_exit: bool = True
+    notify_on_news_refresh: bool = False
+
+
+@dataclass(slots=True)
 class BotConfig:
     app: AppConfig = field(default_factory=AppConfig)
     exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
@@ -75,6 +115,9 @@ class BotConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     trade: TradeConfig = field(default_factory=TradeConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
+    advanced: AdvancedSignalConfig = field(default_factory=AdvancedSignalConfig)
+    news: NewsConfig = field(default_factory=NewsConfig)
+    notification: NotificationConfig = field(default_factory=NotificationConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -82,6 +125,7 @@ class BotConfig:
 
 def load_bot_config(config_path: str = "config.yaml") -> BotConfig:
     """Load bot config from yaml file with defaults."""
+    load_dotenv()
     default = BotConfig()
     path = Path(config_path)
     if not path.exists():
@@ -98,6 +142,9 @@ def load_bot_config(config_path: str = "config.yaml") -> BotConfig:
         llm=LLMConfig(**_only_known_keys(LLMConfig, merged["llm"])),
         trade=TradeConfig(**_only_known_keys(TradeConfig, merged["trade"])),
         risk=RiskConfig(**_only_known_keys(RiskConfig, merged["risk"])),
+        advanced=AdvancedSignalConfig(**_only_known_keys(AdvancedSignalConfig, merged["advanced"])),
+        news=NewsConfig(**_only_known_keys(NewsConfig, merged["news"])),
+        notification=_notification_with_env(merged["notification"]),
     )
 
 
@@ -118,3 +165,10 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 def _only_known_keys(dataclass_type, data: dict[str, Any]) -> dict[str, Any]:
     allowed = getattr(dataclass_type, "__dataclass_fields__", {})
     return {key: value for key, value in data.items() if key in allowed}
+
+
+def _notification_with_env(raw: dict[str, Any]) -> NotificationConfig:
+    data = _only_known_keys(NotificationConfig, raw)
+    if not data.get("discord_webhook_url"):
+        data["discord_webhook_url"] = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+    return NotificationConfig(**data)

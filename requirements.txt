@@ -6,7 +6,7 @@ pandas>=2.0.0
 numpy>=1.24.0
 
 # Gemini LLM
-google-generativeai>=0.3.0
+google-genai>=1.0.0
 
 # RAG / 임베딩 (선택)
 faiss-cpu>=1.7.4

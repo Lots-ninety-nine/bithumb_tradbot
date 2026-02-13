@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import logging
 import math
@@ -13,6 +13,7 @@ from typing import Any
 
 from core.config_loader import BotConfig, load_bot_config
 from core.exchange import BithumbExchange
+from core.notifier import DiscordNotifier, NotifyEvent
 
 
 logging.basicConfig(
@@ -34,14 +35,18 @@ class TradingOrchestrator:
         self.min_order_krw = float(config.trade.min_order_krw)
         self.max_dead_cat_risk = float(config.llm.max_dead_cat_risk)
         self.frame_priority = tuple(config.strategy.interval_priority)
+        self._started_notified = False
 
         from core.llm_analyzer import GeminiAnalyzer
         from core.risk_manager import RiskManager
+        from core.advanced_signals import evaluate_advanced_signals
         from core.strategy import HardRuleConfig, evaluate_hard_rule
         from data.collector import MarketDataCollector
+        from data.news_collector import MarketNewsCollector
         from data.rag_store import SimpleRAGStore
 
         self._evaluate_hard_rule = evaluate_hard_rule
+        self._evaluate_advanced_signals = evaluate_advanced_signals
         self._rule_config = HardRuleConfig(
             min_data_rows=int(config.strategy.min_data_rows),
             required_signal_count=int(config.strategy.required_signal_count),
@@ -49,6 +54,7 @@ class TradingOrchestrator:
             bollinger_touch_tolerance_pct=float(config.strategy.bollinger_touch_tolerance_pct),
             use_macd_golden_cross=bool(config.strategy.use_macd_golden_cross),
         )
+        self._advanced_config = config.advanced
 
         self.exchange = BithumbExchange(
             quote_currency=config.exchange.quote_currency,
@@ -64,6 +70,13 @@ class TradingOrchestrator:
             candle_count=config.collector.candle_count,
         )
         self.rag_store = SimpleRAGStore()
+        self.news_collector = MarketNewsCollector(
+            exchange=self.exchange,
+            rag_store=self.rag_store,
+            config=config.news,
+        )
+        self.news_refresh_interval_sec = int(config.news.refresh_interval_sec)
+        self._next_news_refresh_at = 0.0
         self.analyzer = GeminiAnalyzer(
             model_name=config.llm.model_name,
             min_buy_confidence=config.llm.min_buy_confidence,
@@ -75,11 +88,13 @@ class TradingOrchestrator:
             trailing_start_pct=config.risk.trailing_start_pct,
             trailing_gap_pct=config.risk.trailing_gap_pct,
         )
+        self.notifier = self._build_notifier(config=config)
 
     def run_once(self) -> None:
         if not self.collector.watchlist:
             watchlist = self.collector.refresh_watchlist()
             LOGGER.info("Watchlist updated: %s", watchlist)
+        self._refresh_news_if_needed()
 
         snapshots = self.collector.collect_once()
         if not snapshots:
@@ -95,6 +110,20 @@ class TradingOrchestrator:
             if not signal.is_buy_candidate:
                 continue
 
+            advanced = self._evaluate_advanced_signals(
+                frame=frame,
+                orderbook=snapshot.orderbook,
+                config=self._advanced_config,
+            )
+            if self._advanced_config.enabled and not advanced.buy_bias:
+                LOGGER.info(
+                    "%s advanced gate blocked score=%.3f reasons=%s",
+                    ticker,
+                    advanced.total_score,
+                    advanced.reasons,
+                )
+                continue
+
             asset_symbol = ticker.split("-")[-1] if "-" in ticker else ticker
             news_context = self.rag_store.query_for_trade(ticker=asset_symbol, limit=3)
             recent_frame = frame.tail(40).reset_index()
@@ -106,11 +135,20 @@ class TradingOrchestrator:
 
             llm_decision = self.analyzer.analyze(
                 ticker=ticker,
-                technical_payload=asdict(signal),
+                technical_payload={
+                    "hard_rule": asdict(signal),
+                    "advanced": advanced.to_dict(),
+                },
                 candle_payload=recent_candles,
                 rag_payload=news_context,
             )
-            LOGGER.info("%s signal=%s llm=%s", ticker, asdict(signal), asdict(llm_decision))
+            LOGGER.info(
+                "%s hard=%s advanced=%s llm=%s",
+                ticker,
+                asdict(signal),
+                advanced.to_dict(),
+                asdict(llm_decision),
+            )
 
             if not self.analyzer.allow_buy(llm_decision, max_dead_cat_risk=self.max_dead_cat_risk):
                 LOGGER.info(
@@ -171,6 +209,21 @@ class TradingOrchestrator:
                 self.exchange.market_buy(ticker=ticker, quantity=quantity)
                 LOGGER.info("BUY executed for %s", ticker)
 
+            if self.config.notification.notify_on_buy:
+                self._notify(
+                    NotifyEvent(
+                        title="BUY Signal",
+                        description=f"{ticker} 진입 처리",
+                        level="success",
+                        fields=[
+                            DiscordNotifier.field("ticker", ticker, inline=True),
+                            DiscordNotifier.field("qty", f"{quantity:.8f}", inline=True),
+                            DiscordNotifier.field("price", f"{current_price:.2f}", inline=True),
+                            DiscordNotifier.field("dry_run", self.dry_run, inline=True),
+                        ],
+                    )
+                )
+
         self._check_open_positions()
 
     def _check_open_positions(self) -> None:
@@ -195,8 +248,38 @@ class TradingOrchestrator:
                 LOGGER.info("SELL executed for %s reason=%s", position.ticker, decision.reason)
             self.risk.close_position(slot_id)
 
+            if self.config.notification.notify_on_sell:
+                self._notify(
+                    NotifyEvent(
+                        title="SELL Exit",
+                        description=f"{position.ticker} 청산 처리",
+                        level="warn" if decision.reason == "stop_loss" else "info",
+                        fields=[
+                            DiscordNotifier.field("ticker", position.ticker, inline=True),
+                            DiscordNotifier.field("qty", f"{position.quantity:.8f}", inline=True),
+                            DiscordNotifier.field("reason", decision.reason, inline=True),
+                            DiscordNotifier.field("dry_run", self.dry_run, inline=True),
+                        ],
+                    )
+                )
+
     def run_forever(self) -> None:
-        LOGGER.info("Trading loop started at %s", datetime.utcnow().isoformat())
+        LOGGER.info("Trading loop started at %s", datetime.now(timezone.utc).isoformat())
+        if not self._started_notified and self.config.notification.notify_on_startup:
+            self._notify(
+                NotifyEvent(
+                    title="Bot Started",
+                    description="트레이딩 루프가 시작되었습니다.",
+                    level="info",
+                    fields=[
+                        DiscordNotifier.field("dry_run", self.dry_run, inline=True),
+                        DiscordNotifier.field("interval_sec", self.loop_interval_sec, inline=True),
+                        DiscordNotifier.field("slot_count", self.config.trade.slot_count, inline=True),
+                    ],
+                )
+            )
+            self._started_notified = True
+
         consecutive_errors = 0
         while True:
             try:
@@ -205,6 +288,21 @@ class TradingOrchestrator:
             except Exception:
                 consecutive_errors += 1
                 LOGGER.exception("Unhandled error in trading loop")
+                if self.config.notification.notify_on_error:
+                    self._notify(
+                        NotifyEvent(
+                            title="Bot Error",
+                            description="트레이딩 루프 예외 발생",
+                            level="error",
+                            fields=[
+                                DiscordNotifier.field(
+                                    "consecutive_errors",
+                                    consecutive_errors,
+                                    inline=True,
+                                )
+                            ],
+                        )
+                    )
                 if consecutive_errors >= self.max_consecutive_errors:
                     LOGGER.error(
                         "Consecutive error limit reached (%s). Cooling down for 5 minutes.",
@@ -218,6 +316,48 @@ class TradingOrchestrator:
                 time.sleep(backoff)
                 continue
             time.sleep(self.loop_interval_sec)
+
+    def _refresh_news_if_needed(self) -> None:
+        if not self.config.news.enabled:
+            return
+        now_ts = time.time()
+        if now_ts < self._next_news_refresh_at:
+            return
+
+        result = self.news_collector.collect_once(self.collector.watchlist)
+        self._next_news_refresh_at = now_ts + self.news_refresh_interval_sec
+        LOGGER.info("News refreshed: %s", result)
+        if self.config.notification.notify_on_news_refresh:
+            self._notify(
+                NotifyEvent(
+                    title="News Refresh",
+                    description="RAG 뉴스 컨텍스트 갱신",
+                    level="info",
+                    fields=[
+                        DiscordNotifier.field("stored", result.get("stored", 0), inline=True),
+                        DiscordNotifier.field("sources", result.get("source_counts", {}), inline=False),
+                    ],
+                )
+            )
+
+    def _build_notifier(self, config: BotConfig) -> DiscordNotifier | None:
+        if not config.notification.enabled:
+            return None
+        webhook = config.notification.discord_webhook_url
+        if not webhook:
+            LOGGER.warning("notification.enabled=true but discord_webhook_url is empty")
+            return None
+        return DiscordNotifier(
+            webhook_url=webhook,
+            username=config.notification.username,
+            timeout_sec=config.notification.timeout_sec,
+            min_interval_sec=config.notification.min_interval_sec,
+        )
+
+    def _notify(self, event: NotifyEvent) -> None:
+        if self.notifier is None:
+            return
+        self.notifier.send(event)
 
     def _pick_frame(self, candles: dict[str, Any]):
         for interval in self.frame_priority:

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
-from datetime import timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from core.exchange import BithumbExchange
@@ -60,7 +59,7 @@ class MarketDataCollector:
         if not self.watchlist:
             self.refresh_watchlist()
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         result: dict[str, TickerSnapshot] = {}
         for ticker in self.watchlist:
             candles: dict[str, Any] = {}

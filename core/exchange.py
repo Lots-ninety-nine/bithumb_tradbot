@@ -383,6 +383,21 @@ class BithumbExchange:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [ticker for _, ticker in scored[:limit]]
 
+    def get_bithumb_notices(self, page: int = 1, limit: int = 20) -> list[dict[str, Any]]:
+        """Fetch Bithumb service center notices."""
+        data = self._public_get(
+            "/v1/service_center/notice",
+            {"page": page, "limit": limit},
+        )
+        if isinstance(data, list):
+            return [row for row in data if isinstance(row, dict)]
+        if isinstance(data, dict):
+            for key in ("data", "content", "list", "items"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    return [row for row in value if isinstance(row, dict)]
+        return []
+
     def _public_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         if not self.public_api_enabled:
             return None

@@ -36,7 +36,7 @@ strategy:
   use_macd_golden_cross: true
 
 llm:
-  model_name: gemini-1.5-flash
+  model_name: gemini-2.5-flash
   min_buy_confidence: 0.7
   max_dead_cat_risk: 0.55
 
@@ -50,3 +50,35 @@ risk:
   stop_loss_pct: 0.03
   trailing_start_pct: 0.01
   trailing_gap_pct: 0.015
+
+advanced:
+  enabled: true
+  min_total_score: 1.5
+  support_resistance_weight: 0.6
+  pattern_weight: 0.5
+  orderbook_weight: 0.7
+  support_proximity_pct: 0.01
+  resistance_proximity_pct: 0.008
+  imbalance_buy_threshold: 0.12
+
+news:
+  enabled: true
+  refresh_interval_sec: 300
+  per_source_limit: 30
+  use_bithumb_notice: true
+  use_coindesk_rss: true
+  use_naver_openapi: false
+  coindesk_rss_url: https://www.coindesk.com/arc/outboundfeeds/rss/
+
+notification:
+  enabled: false
+  discord_webhook_url: ""
+  username: BithumbTradBot
+  timeout_sec: 5.0
+  min_interval_sec: 1.0
+  notify_on_startup: true
+  notify_on_error: true
+  notify_on_buy: true
+  notify_on_sell: true
+  notify_on_risk_exit: true
+  notify_on_news_refresh: false

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 @dataclass(slots=True)
@@ -64,7 +64,7 @@ class RiskManager:
             quantity=quantity,
             entry_price=entry_price,
             highest_price=entry_price,
-            opened_at=datetime.utcnow(),
+            opened_at=datetime.now(timezone.utc),
         )
         self.positions[slot_id] = position
         return position
