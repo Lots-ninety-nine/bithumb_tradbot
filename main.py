@@ -11,6 +11,7 @@ import math
 import time
 from typing import Any
 
+from core.config_loader import BotConfig, load_bot_config
 from core.exchange import BithumbExchange
 
 
@@ -24,45 +25,58 @@ LOGGER = logging.getLogger("tradbot")
 class TradingOrchestrator:
     """Integrates Data/Intelligence/Risk agents."""
 
-    def __init__(
-        self,
-        loop_interval_sec: int = 60,
-        dry_run: bool = True,
-        min_buy_confidence: float = 0.7,
-        max_spread_bps: float = 35.0,
-        min_order_krw: float = 5000.0,
-        max_consecutive_errors: int = 5,
-        enable_official_orders: bool = False,
-    ) -> None:
-        self.loop_interval_sec = loop_interval_sec
-        self.dry_run = dry_run
-        self.max_spread_bps = max_spread_bps
-        self.min_order_krw = min_order_krw
-        self.max_consecutive_errors = max_consecutive_errors
+    def __init__(self, config: BotConfig) -> None:
+        self.config = config
+        self.loop_interval_sec = int(config.app.interval_sec)
+        self.dry_run = bool(config.app.dry_run)
+        self.max_consecutive_errors = int(config.app.max_consecutive_errors)
+        self.max_spread_bps = float(config.trade.max_spread_bps)
+        self.min_order_krw = float(config.trade.min_order_krw)
+        self.max_dead_cat_risk = float(config.llm.max_dead_cat_risk)
+        self.frame_priority = tuple(config.strategy.interval_priority)
 
         from core.llm_analyzer import GeminiAnalyzer
         from core.risk_manager import RiskManager
-        from core.strategy import evaluate_hard_rule
+        from core.strategy import HardRuleConfig, evaluate_hard_rule
         from data.collector import MarketDataCollector
         from data.rag_store import SimpleRAGStore
 
         self._evaluate_hard_rule = evaluate_hard_rule
-        self.exchange = BithumbExchange(enable_official_orders=enable_official_orders)
-        self.collector = MarketDataCollector(exchange=self.exchange)
+        self._rule_config = HardRuleConfig(
+            min_data_rows=int(config.strategy.min_data_rows),
+            required_signal_count=int(config.strategy.required_signal_count),
+            rsi_buy_threshold=float(config.strategy.rsi_buy_threshold),
+            bollinger_touch_tolerance_pct=float(config.strategy.bollinger_touch_tolerance_pct),
+            use_macd_golden_cross=bool(config.strategy.use_macd_golden_cross),
+        )
+
+        self.exchange = BithumbExchange(
+            quote_currency=config.exchange.quote_currency,
+            public_retry_count=config.exchange.public_retry_count,
+            public_retry_delay_sec=config.exchange.public_retry_delay_sec,
+            timeout_sec=config.exchange.timeout_sec,
+            enable_official_orders=config.app.enable_official_orders,
+        )
+        self.collector = MarketDataCollector(
+            exchange=self.exchange,
+            intervals=tuple(config.collector.intervals),
+            top_n=config.collector.top_n,
+            candle_count=config.collector.candle_count,
+        )
         self.rag_store = SimpleRAGStore()
         self.analyzer = GeminiAnalyzer(
-            model_name="gemini-1.5-flash",
-            min_buy_confidence=min_buy_confidence,
+            model_name=config.llm.model_name,
+            min_buy_confidence=config.llm.min_buy_confidence,
         )
-        self.risk = RiskManager()
+        self.risk = RiskManager(
+            seed_krw=config.trade.seed_krw,
+            slot_count=config.trade.slot_count,
+            stop_loss_pct=config.risk.stop_loss_pct,
+            trailing_start_pct=config.risk.trailing_start_pct,
+            trailing_gap_pct=config.risk.trailing_gap_pct,
+        )
 
     def run_once(self) -> None:
-        """Single cycle:
-        1) Refresh watchlist / market data
-        2) Hard-rule filter
-        3) LLM check
-        4) Risk checks and execution
-        """
         if not self.collector.watchlist:
             watchlist = self.collector.refresh_watchlist()
             LOGGER.info("Watchlist updated: %s", watchlist)
@@ -73,13 +87,11 @@ class TradingOrchestrator:
             return
 
         for ticker, snapshot in snapshots.items():
-            frame = snapshot.candles.get("minute5")
-            if frame is None or frame.empty:
-                frame = snapshot.candles.get("minute1")
+            frame = self._pick_frame(snapshot.candles)
             if frame is None or frame.empty:
                 continue
 
-            signal = self._evaluate_hard_rule(frame)
+            signal = self._evaluate_hard_rule(frame, config=self._rule_config)
             if not signal.is_buy_candidate:
                 continue
 
@@ -91,6 +103,7 @@ class TradingOrchestrator:
             if "timestamp" in recent_frame.columns:
                 recent_frame["timestamp"] = recent_frame["timestamp"].astype(str)
             recent_candles = recent_frame.to_dict(orient="records")
+
             llm_decision = self.analyzer.analyze(
                 ticker=ticker,
                 technical_payload=asdict(signal),
@@ -99,7 +112,7 @@ class TradingOrchestrator:
             )
             LOGGER.info("%s signal=%s llm=%s", ticker, asdict(signal), asdict(llm_decision))
 
-            if not self.analyzer.allow_buy(llm_decision):
+            if not self.analyzer.allow_buy(llm_decision, max_dead_cat_risk=self.max_dead_cat_risk):
                 LOGGER.info(
                     "%s LLM buy gate blocked decision=%s confidence=%.2f dead_cat=%.2f",
                     ticker,
@@ -116,6 +129,7 @@ class TradingOrchestrator:
             current_price = float(frame.iloc[-1]["close"])
             if current_price <= 0:
                 continue
+
             quantity = self.risk.slot_budget_krw / current_price
             order_value_krw = quantity * current_price
             if order_value_krw < self.min_order_krw:
@@ -205,6 +219,13 @@ class TradingOrchestrator:
                 continue
             time.sleep(self.loop_interval_sec)
 
+    def _pick_frame(self, candles: dict[str, Any]):
+        for interval in self.frame_priority:
+            frame = candles.get(interval)
+            if frame is not None and not frame.empty:
+                return frame
+        return None
+
     @staticmethod
     def _calc_spread_bps(orderbook: dict[str, Any] | None) -> float | None:
         if not orderbook:
@@ -257,69 +278,29 @@ class TradingOrchestrator:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bithumb AI Hybrid Agent")
     parser.add_argument(
+        "--config",
+        default="config.yaml",
+        help="YAML 설정파일 경로 (default: config.yaml)",
+    )
+    parser.add_argument(
         "--check-account",
         action="store_true",
-        help="Run Step 1 account connectivity check and exit.",
-    )
-    parser.add_argument(
-        "--sample-ticker",
-        default="BTC",
-        help="Ticker symbol for account check (default: BTC).",
-    )
-    parser.add_argument(
-        "--run-once",
-        action="store_true",
-        help="Run one trading cycle and exit.",
+        help="계좌/API 연동 상태를 출력하고 종료",
     )
     parser.add_argument(
         "--validate-data",
         action="store_true",
-        help="Run Step 2 data/indicator validation and exit.",
+        help="데이터/지표 품질 점검 후 종료",
     )
     parser.add_argument(
-        "--interval",
-        type=int,
-        default=60,
-        help="Loop interval seconds (default: 60).",
-    )
-    parser.add_argument(
-        "--live",
+        "--run-once",
         action="store_true",
-        help="Enable real order execution (default: dry-run).",
-    )
-    parser.add_argument(
-        "--min-buy-confidence",
-        type=float,
-        default=0.7,
-        help="Minimum Gemini confidence required for BUY execution.",
-    )
-    parser.add_argument(
-        "--max-spread-bps",
-        type=float,
-        default=35.0,
-        help="Max spread in bps allowed for entry.",
-    )
-    parser.add_argument(
-        "--min-order-krw",
-        type=float,
-        default=5000.0,
-        help="Minimum order notional in KRW.",
-    )
-    parser.add_argument(
-        "--max-consecutive-errors",
-        type=int,
-        default=5,
-        help="Loop cooldown trigger threshold for consecutive exceptions.",
-    )
-    parser.add_argument(
-        "--enable-official-orders",
-        action="store_true",
-        help="Allow REST order execution (v2 beta endpoints). Use only after live verification.",
+        help="루프 1회 실행 후 종료",
     )
     return parser.parse_args()
 
 
-def run_data_validation() -> int:
+def run_data_validation(config: BotConfig) -> int:
     try:
         from core.strategy import indicator_health
         from data.collector import MarketDataCollector
@@ -337,19 +318,33 @@ def run_data_validation() -> int:
         )
         return 1
 
-    exchange = BithumbExchange()
-    collector = MarketDataCollector(exchange=exchange, intervals=("minute1", "minute5", "minute15"))
+    exchange = BithumbExchange(
+        quote_currency=config.exchange.quote_currency,
+        public_retry_count=config.exchange.public_retry_count,
+        public_retry_delay_sec=config.exchange.public_retry_delay_sec,
+        timeout_sec=config.exchange.timeout_sec,
+        enable_official_orders=config.app.enable_official_orders,
+    )
+    collector = MarketDataCollector(
+        exchange=exchange,
+        intervals=tuple(config.collector.intervals),
+        top_n=config.collector.top_n,
+        candle_count=config.collector.candle_count,
+    )
+
     watchlist = collector.refresh_watchlist()
     snapshots = collector.collect_once()
-    quality = collector.get_data_quality_report(min_rows=60)
+    quality = collector.get_data_quality_report(min_rows=max(30, config.strategy.min_data_rows))
 
     indicator_report: dict[str, dict[str, object]] = {}
     for ticker, snapshot in snapshots.items():
-        frame = snapshot.candles.get("minute15")
-        if frame is None or frame.empty:
-            frame = snapshot.candles.get("minute5")
-        if frame is None or frame.empty:
-            frame = snapshot.candles.get("minute1")
+        frame = None
+        for interval in config.strategy.interval_priority:
+            cand = snapshot.candles.get(interval)
+            if cand is not None and not cand.empty:
+                frame = cand
+                break
+
         if frame is None or frame.empty:
             indicator_report[ticker] = {"ready": False, "reason": "no_candle_data"}
             continue
@@ -373,25 +368,27 @@ def run_data_validation() -> int:
 
 def main() -> None:
     args = parse_args()
+    config = load_bot_config(args.config)
+
+    level_name = str(config.app.log_level).upper().strip()
+    logging.getLogger().setLevel(getattr(logging, level_name, logging.INFO))
 
     if args.check_account:
-        exchange = BithumbExchange()
-        report = exchange.connectivity_report(sample_ticker=args.sample_ticker.upper())
+        exchange = BithumbExchange(
+            quote_currency=config.exchange.quote_currency,
+            public_retry_count=config.exchange.public_retry_count,
+            public_retry_delay_sec=config.exchange.public_retry_delay_sec,
+            timeout_sec=config.exchange.timeout_sec,
+            enable_official_orders=config.app.enable_official_orders,
+        )
+        report = exchange.connectivity_report(sample_ticker=config.exchange.sample_ticker)
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return
 
     if args.validate_data:
-        raise SystemExit(run_data_validation())
+        raise SystemExit(run_data_validation(config))
 
-    orchestrator = TradingOrchestrator(
-        loop_interval_sec=args.interval,
-        dry_run=not args.live,
-        min_buy_confidence=args.min_buy_confidence,
-        max_spread_bps=args.max_spread_bps,
-        min_order_krw=args.min_order_krw,
-        max_consecutive_errors=args.max_consecutive_errors,
-        enable_official_orders=args.enable_official_orders,
-    )
+    orchestrator = TradingOrchestrator(config=config)
     if args.run_once:
         orchestrator.run_once()
         return

@@ -1,0 +1,52 @@
+# Bithumb Tradbot 설정 파일
+# - API 키/시크릿은 .env에 넣고, 이 파일에는 전략/운영 파라미터만 넣으세요.
+# - 퍼센트는 0~1 소수로 입력합니다. 예) 5% = 0.05
+
+app:
+  dry_run: true
+  interval_sec: 60
+  max_consecutive_errors: 5
+  enable_official_orders: false
+  log_level: INFO
+
+exchange:
+  sample_ticker: KRW-BTC
+  quote_currency: KRW
+  public_retry_count: 2
+  public_retry_delay_sec: 0.2
+  timeout_sec: 8.0
+
+collector:
+  top_n: 5
+  candle_count: 200
+  intervals:
+    - minute1
+    - minute5
+    - minute15
+
+strategy:
+  interval_priority:
+    - minute15
+    - minute5
+    - minute1
+  min_data_rows: 35
+  required_signal_count: 2
+  rsi_buy_threshold: 30.0
+  bollinger_touch_tolerance_pct: 0.0
+  use_macd_golden_cross: true
+
+llm:
+  model_name: gemini-1.5-flash
+  min_buy_confidence: 0.7
+  max_dead_cat_risk: 0.55
+
+trade:
+  seed_krw: 150000
+  slot_count: 3
+  min_order_krw: 5000
+  max_spread_bps: 35.0
+
+risk:
+  stop_loss_pct: 0.03
+  trailing_start_pct: 0.01
+  trailing_gap_pct: 0.015

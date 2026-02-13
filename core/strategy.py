@@ -18,6 +18,17 @@ class TechnicalSignal:
     indicators: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class HardRuleConfig:
+    """Configurable hard-rule thresholds."""
+
+    min_data_rows: int = 35
+    required_signal_count: int = 2
+    rsi_buy_threshold: float = 30.0
+    bollinger_touch_tolerance_pct: float = 0.0
+    use_macd_golden_cross: bool = True
+
+
 def calculate_rsi(close: pd.Series, period: int = 14) -> pd.Series:
     """Calculate RSI from close price."""
     delta = close.diff()
@@ -50,7 +61,7 @@ def add_indicators(frame: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def evaluate_hard_rule(frame: pd.DataFrame) -> TechnicalSignal:
+def evaluate_hard_rule(frame: pd.DataFrame, config: HardRuleConfig | None = None) -> TechnicalSignal:
     """Evaluate technical buy conditions.
 
     Buy candidate if at least 2/3 conditions are met:
@@ -58,8 +69,9 @@ def evaluate_hard_rule(frame: pd.DataFrame) -> TechnicalSignal:
     - Close touches lower Bollinger band
     - MACD golden cross
     """
+    rule = config or HardRuleConfig()
     df = add_indicators(frame)
-    if df.empty or len(df) < 35:
+    if df.empty or len(df) < rule.min_data_rows:
         return TechnicalSignal(
             is_buy_candidate=False,
             score=0,
@@ -69,8 +81,11 @@ def evaluate_hard_rule(frame: pd.DataFrame) -> TechnicalSignal:
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    cond_rsi = pd.notna(last["rsi14"]) and float(last["rsi14"]) <= 30.0
-    cond_bb = pd.notna(last["bb_lower"]) and float(last["close"]) <= float(last["bb_lower"])
+    cond_rsi = pd.notna(last["rsi14"]) and float(last["rsi14"]) <= rule.rsi_buy_threshold
+    lower_touch_price = None
+    if pd.notna(last["bb_lower"]):
+        lower_touch_price = float(last["bb_lower"]) * (1 + rule.bollinger_touch_tolerance_pct)
+    cond_bb = lower_touch_price is not None and float(last["close"]) <= lower_touch_price
     cond_macd = (
         pd.notna(prev["macd"])
         and pd.notna(prev["macd_signal"])
@@ -78,7 +93,7 @@ def evaluate_hard_rule(frame: pd.DataFrame) -> TechnicalSignal:
         and pd.notna(last["macd_signal"])
         and float(prev["macd"]) <= float(prev["macd_signal"])
         and float(last["macd"]) > float(last["macd_signal"])
-    )
+    ) if rule.use_macd_golden_cross else False
 
     reasons: list[str] = []
     if cond_rsi:
@@ -90,7 +105,7 @@ def evaluate_hard_rule(frame: pd.DataFrame) -> TechnicalSignal:
 
     score = int(cond_rsi) + int(cond_bb) + int(cond_macd)
     return TechnicalSignal(
-        is_buy_candidate=score >= 2,
+        is_buy_candidate=score >= rule.required_signal_count,
         score=score,
         reasons=reasons,
         indicators={
