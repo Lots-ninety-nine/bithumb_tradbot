@@ -529,14 +529,20 @@ class BybitExchange:
             raise RuntimeError("requests is not installed")
         url = f"{self.base_url}{path}"
         headers = {"Content-Type": "application/json"}
+        method_upper = method.upper()
         req_params = params or {}
         req_body = body or {}
+        req_body_json = (
+            json.dumps(req_body, separators=(",", ":"), ensure_ascii=False)
+            if method_upper != "GET" and req_body
+            else ""
+        )
         if signed:
             if not self.credentials.is_ready:
                 raise RuntimeError("Bybit credentials are missing")
             ts = str(int(time.time() * 1000))
             recv = str(self.recv_window)
-            raw = urlencode(req_params, doseq=True) if method.upper() == "GET" else json.dumps(req_body, separators=(",", ":"))
+            raw = urlencode(req_params, doseq=True) if method_upper == "GET" else req_body_json
             sign_payload = f"{ts}{self.credentials.api_key}{recv}{raw}"
             sign = hmac.new(
                 self.credentials.secret_key.encode("utf-8"),
@@ -554,10 +560,10 @@ class BybitExchange:
             )
 
         response = self._session.request(
-            method=method.upper(),
+            method=method_upper,
             url=url,
             params=req_params if req_params else None,
-            json=req_body if method.upper() != "GET" else None,
+            data=req_body_json if method_upper != "GET" and req_body_json else None,
             headers=headers,
             timeout=self.timeout_sec,
         )
