@@ -8,7 +8,7 @@ from data.rag_store import SimpleRAGStore
 
 
 class _FakeExchange:
-    def get_bithumb_notices(self, page: int = 1, limit: int = 20):
+    def get_exchange_notices(self, page: int = 1, limit: int = 20):
         return [
             {
                 "id": "1",
@@ -27,13 +27,13 @@ class NewsCollectorTest(unittest.TestCase):
         rag_store.items = []
         cfg = NewsConfig(
             enabled=True,
-            use_bithumb_notice=True,
+            use_exchange_notice=True,
             use_coindesk_rss=False,
             use_naver_openapi=False,
             per_source_limit=5,
         )
         collector = MarketNewsCollector(exchange=exchange, rag_store=rag_store, config=cfg)
-        result = collector.collect_once(watchlist=["KRW-BTC"])
+        result = collector.collect_once(watchlist=["BTCUSDT"])
         self.assertGreaterEqual(result["stored"], 1)
         self.assertGreaterEqual(len(rag_store.items), 1)
 

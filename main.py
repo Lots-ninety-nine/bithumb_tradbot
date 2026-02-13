@@ -1,4 +1,4 @@
-"""Bithumb AI Hybrid Agent orchestrator."""
+"""Bybit AI Hybrid Agent orchestrator."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from typing import Any
 
 from core.config_loader import BotConfig, load_bot_config
 from core.bybit_exchange import BybitExchange
-from core.exchange import BithumbExchange
 from core.notifier import DiscordNotifier, NotifyEvent
 from core.performance_tracker import PerformanceSnapshot, PerformanceTracker
 
@@ -33,13 +32,13 @@ class TradingOrchestrator:
 
     def __init__(self, config: BotConfig) -> None:
         self.config = config
-        self.provider = resolve_exchange_provider(config)
+        self.provider = "bybit"
         self.loop_interval_sec = int(config.app.interval_sec)
         self.dry_run = bool(config.app.dry_run)
         self.max_consecutive_errors = int(config.app.max_consecutive_errors)
         self.max_spread_bps = float(config.trade.max_spread_bps)
-        self.min_order_krw = float(config.trade.min_order_krw)
-        self.use_available_krw_as_seed = bool(config.trade.use_available_krw_as_seed)
+        self.min_order_notional = float(config.trade.min_order_notional)
+        self.use_available_balance_as_seed = bool(config.trade.use_available_balance_as_seed)
         self.order_retry_count = int(config.trade.order_retry_count)
         self.order_retry_delay_sec = float(config.trade.order_retry_delay_sec)
         self.order_fill_wait_sec = float(config.trade.order_fill_wait_sec)
@@ -50,8 +49,8 @@ class TradingOrchestrator:
         self.hold_buy_min_confidence = float(config.llm.hold_buy_min_confidence)
         self.hold_buy_max_dead_cat_risk = float(config.llm.hold_buy_max_dead_cat_risk)
         self.hold_buy_min_advanced_score = float(config.llm.hold_buy_min_advanced_score)
-        self.allow_long = True
-        self.allow_short = False
+        self.allow_long = bool(config.bybit.allow_long)
+        self.allow_short = bool(config.bybit.allow_short)
         self.short_min_advanced_score = float(config.bybit.short_min_advanced_score)
         self.frame_priority = tuple(config.strategy.interval_priority)
         self.log_api_usage = bool(config.app.log_api_usage)
@@ -59,6 +58,8 @@ class TradingOrchestrator:
         self.performance_log_interval_sec = int(config.app.performance_log_interval_sec)
         self._started_notified = False
         self._next_performance_log_at = 0.0
+        self.position_sync_interval_sec = max(60, self.loop_interval_sec * 3)
+        self._next_position_sync_at = 0.0
 
         from core.llm_analyzer import GeminiAnalyzer
         from core.risk_manager import RiskManager
@@ -84,10 +85,8 @@ class TradingOrchestrator:
         self._advanced_config = config.advanced
 
         self.exchange = build_exchange(config)
-        self.asset_unit = str(getattr(self.exchange, "quote_currency", config.exchange.quote_currency)).upper()
-        if self.provider == "bybit":
-            self.allow_long = bool(config.bybit.allow_long)
-            self.allow_short = bool(config.bybit.allow_short) and bool(getattr(self.exchange, "supports_short", False))
+        self.asset_unit = str(getattr(self.exchange, "quote_currency", config.bybit.quote_coin)).upper()
+        self.allow_short = self.allow_short and bool(getattr(self.exchange, "supports_short", False))
         self.collector = MarketDataCollector(
             exchange=self.exchange,
             intervals=tuple(config.collector.intervals),
@@ -110,7 +109,7 @@ class TradingOrchestrator:
             min_sell_confidence=config.llm.min_sell_confidence,
         )
         self.risk = RiskManager(
-            seed_krw=config.trade.seed_krw,
+            seed_krw=config.trade.seed_capital,
             slot_count=config.trade.slot_count,
             stop_loss_pct=config.risk.stop_loss_pct,
             trailing_start_pct=config.risk.trailing_start_pct,
@@ -120,9 +119,11 @@ class TradingOrchestrator:
         self.performance_tracker = PerformanceTracker(
             baseline_path=config.app.performance_baseline_path,
         )
+        self._sync_remote_positions(force=True)
 
     def run_once(self) -> None:
         try:
+            self._sync_remote_positions()
             if not self.collector.watchlist:
                 watchlist = self.collector.refresh_watchlist()
                 LOGGER.info("Watchlist updated: %s", watchlist)
@@ -186,7 +187,7 @@ class TradingOrchestrator:
                     advanced_score=advanced.total_score,
                 )
 
-                asset_symbol = ticker.split("-")[-1] if "-" in ticker else ticker
+                asset_symbol = self._asset_symbol(ticker)
                 news_context = self.rag_store.query_for_trade(ticker=asset_symbol, limit=3)
                 recent_frame = frame.tail(40).reset_index()
                 if len(recent_frame.columns) > 0:
@@ -261,15 +262,15 @@ class TradingOrchestrator:
                 if current_price <= 0:
                     continue
 
-                slot_budget_krw = self._resolve_slot_budget_krw()
-                quantity = slot_budget_krw / current_price
-                order_value_krw = quantity * current_price
-                if order_value_krw < self.min_order_krw:
+                slot_budget_notional = self._resolve_slot_budget_notional()
+                quantity = slot_budget_notional / current_price
+                order_value_notional = quantity * current_price
+                if order_value_notional < self.min_order_notional:
                     LOGGER.info(
                         "%s skipped by min order rule value=%.2f min=%.2f",
                         ticker,
-                        order_value_krw,
-                        self.min_order_krw,
+                        order_value_notional,
+                        self.min_order_notional,
                     )
                     continue
 
@@ -307,7 +308,7 @@ class TradingOrchestrator:
                             ticker=ticker,
                             side=selected_side,
                             quantity=quantity,
-                            notional=slot_budget_krw,
+                            notional=slot_budget_notional,
                             order_retry_count=self.order_retry_count,
                             order_retry_delay_sec=self.order_retry_delay_sec,
                             order_fill_wait_sec=self.order_fill_wait_sec,
@@ -340,6 +341,75 @@ class TradingOrchestrator:
         finally:
             self.log_performance_summary_if_needed()
             self.log_api_usage_summary(reset=True)
+
+    def _sync_remote_positions(self, force: bool = False) -> None:
+        if self.dry_run:
+            return
+        if not hasattr(self.exchange, "get_open_positions"):
+            return
+        now_ts = time.time()
+        if not force and now_ts < self._next_position_sync_at:
+            return
+        self._next_position_sync_at = now_ts + self.position_sync_interval_sec
+
+        try:
+            remote_positions = self.exchange.get_open_positions()
+        except Exception as exc:
+            LOGGER.warning("Failed to sync open positions: %s", exc)
+            return
+        if not isinstance(remote_positions, list):
+            return
+
+        remote_keys: set[tuple[str, str]] = set()
+        for row in remote_positions:
+            if not isinstance(row, dict):
+                continue
+            ticker = str(row.get("symbol", "")).upper().strip()
+            qty = float(row.get("qty") or 0.0)
+            entry_price = float(row.get("entry_price") or 0.0)
+            side = str(row.get("side") or "LONG").upper().strip()
+            if ticker == "" or qty <= 0 or entry_price <= 0:
+                continue
+            remote_keys.add((ticker, side))
+            if any(pos.ticker == ticker for pos in self.risk.positions.values()):
+                continue
+            if not self.risk.can_open(ticker):
+                LOGGER.warning(
+                    "Open position exists on exchange but local slots full: %s side=%s qty=%.6f",
+                    ticker,
+                    side,
+                    qty,
+                )
+                continue
+            loaded = self.risk.open_position(
+                ticker=ticker,
+                quantity=qty,
+                entry_price=entry_price,
+                side=side,
+            )
+            if loaded is not None:
+                LOGGER.info(
+                    "Synced remote position slot=%s ticker=%s side=%s qty=%.6f entry=%.6f",
+                    loaded.slot_id,
+                    ticker,
+                    loaded.side,
+                    loaded.quantity,
+                    loaded.entry_price,
+                )
+
+        to_remove: list[int] = []
+        for slot_id, pos in self.risk.positions.items():
+            if (pos.ticker, pos.side) not in remote_keys:
+                to_remove.append(slot_id)
+        for slot_id in to_remove:
+            closed = self.risk.close_position(slot_id)
+            if closed is not None:
+                LOGGER.info(
+                    "Local position dropped after remote sync: %s %s slot=%s",
+                    closed.ticker,
+                    closed.side,
+                    slot_id,
+                )
 
     def _check_open_positions(self) -> None:
         for slot_id, position in list(self.risk.positions.items()):
@@ -560,14 +630,17 @@ class TradingOrchestrator:
 
         return candidate_sides[0]
 
-    def _resolve_slot_budget_krw(self) -> float:
+    def _resolve_slot_budget_notional(self) -> float:
         fallback = self.risk.slot_budget_krw
-        if not self.use_available_krw_as_seed:
+        if not self.use_available_balance_as_seed:
             return fallback
         if self.dry_run:
             return fallback
 
-        available_krw = self.exchange.get_available_krw()
+        if hasattr(self.exchange, "get_available_balance"):
+            available_krw = self.exchange.get_available_balance()
+        else:
+            available_krw = self.exchange.get_available_krw()
         if available_krw is None or available_krw <= 0:
             return fallback
 
@@ -630,7 +703,10 @@ class TradingOrchestrator:
         )
 
     def _get_performance_snapshot(self) -> PerformanceSnapshot | None:
-        total_krw = self.exchange.get_total_asset_krw()
+        if hasattr(self.exchange, "get_total_asset"):
+            total_krw = self.exchange.get_total_asset()
+        else:
+            total_krw = self.exchange.get_total_asset_krw()
         if total_krw is None or total_krw <= 0:
             return None
         return self.performance_tracker.snapshot(current_krw=total_krw)
@@ -658,6 +734,16 @@ class TradingOrchestrator:
         return None
 
     @staticmethod
+    def _asset_symbol(ticker: str) -> str:
+        value = ticker.upper().strip()
+        if "-" in value:
+            return value.split("-")[-1]
+        for quote in ("USDT", "USDC", "KRW", "BTC", "ETH"):
+            if value.endswith(quote) and len(value) > len(quote):
+                return value[: -len(quote)]
+        return value
+
+    @staticmethod
     def _calc_spread_bps(orderbook: dict[str, Any] | None) -> float | None:
         if not orderbook:
             return None
@@ -673,6 +759,16 @@ class TradingOrchestrator:
 
     @staticmethod
     def _extract_best_price(orderbook: dict[str, Any], side: str) -> float | None:
+        units = orderbook.get("orderbook_units")
+        if isinstance(units, list) and units:
+            top = units[0]
+            if isinstance(top, dict):
+                key = "bid_price" if side == "bid" else "ask_price"
+                try:
+                    return float(top.get(key))
+                except Exception:
+                    pass
+
         side_key_candidates = {
             "bid": ["bids", "bid", "bid_price"],
             "ask": ["asks", "ask", "ask_price"],
@@ -741,34 +837,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_exchange_provider(config: BotConfig) -> str:
-    provider = str(config.exchange.provider).strip().lower()
-    if provider == "bybit" or bool(config.bybit.enabled):
-        return "bybit"
-    return "bithumb"
-
-
 def build_exchange(config: BotConfig):
-    provider = resolve_exchange_provider(config)
-    if provider == "bybit":
-        return BybitExchange(
-            base_url=config.bybit.base_url,
-            category=config.bybit.category,
-            quote_coin=config.bybit.quote_coin,
-            account_type=config.bybit.account_type,
-            recv_window=config.bybit.recv_window,
-            leverage=config.bybit.leverage,
-            public_retry_count=config.exchange.public_retry_count,
-            public_retry_delay_sec=config.exchange.public_retry_delay_sec,
-            timeout_sec=config.exchange.timeout_sec,
-            enable_trading=not config.app.dry_run,
-        )
-    return BithumbExchange(
-        quote_currency=config.exchange.quote_currency,
+    return BybitExchange(
+        base_url=config.bybit.base_url,
+        category=config.bybit.category,
+        quote_coin=config.bybit.quote_coin,
+        account_type=config.bybit.account_type,
+        recv_window=config.bybit.recv_window,
+        position_idx=config.bybit.position_idx,
+        leverage=config.bybit.leverage,
         public_retry_count=config.exchange.public_retry_count,
         public_retry_delay_sec=config.exchange.public_retry_delay_sec,
         timeout_sec=config.exchange.timeout_sec,
-        enable_official_orders=config.app.enable_official_orders,
+        enable_trading=not config.app.dry_run,
     )
 
 
@@ -845,17 +926,25 @@ def main() -> None:
         exchange = build_exchange(config)
         report = exchange.connectivity_report(sample_ticker=config.exchange.sample_ticker)
         tracker = PerformanceTracker(baseline_path=config.app.performance_baseline_path)
-        total_krw = exchange.get_total_asset_krw()
-        if total_krw is not None and total_krw > 0:
-            perf = tracker.snapshot(current_krw=total_krw)
-            report["performance"] = {
-                "asset_unit": str(getattr(exchange, "quote_currency", config.exchange.quote_currency)).upper(),
-                "started_at": perf.started_at.isoformat(),
-                "baseline_krw": perf.baseline_krw,
-                "current_krw": perf.current_krw,
-                "pnl_krw": perf.pnl_krw,
-                "pnl_pct": perf.pnl_pct,
-            }
+        try:
+            if hasattr(exchange, "get_total_asset"):
+                total_krw = exchange.get_total_asset()
+            else:
+                total_krw = exchange.get_total_asset_krw()
+            if total_krw is not None and total_krw > 0:
+                perf = tracker.snapshot(current_krw=total_krw)
+                report["performance"] = {
+                    "asset_unit": str(getattr(exchange, "quote_currency", config.bybit.quote_coin)).upper(),
+                    "started_at": perf.started_at.isoformat(),
+                    "baseline_krw": perf.baseline_krw,
+                    "current_krw": perf.current_krw,
+                    "pnl_krw": perf.pnl_krw,
+                    "pnl_pct": perf.pnl_pct,
+                }
+        except Exception as exc:
+            report["performance"] = None
+            if not report.get("error"):
+                report["error"] = str(exc)
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return
 

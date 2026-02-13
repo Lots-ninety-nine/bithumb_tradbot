@@ -16,7 +16,6 @@ class AppConfig:
     dry_run: bool = True
     interval_sec: int = 60
     max_consecutive_errors: int = 5
-    enable_official_orders: bool = False
     log_level: str = "INFO"
     log_api_usage: bool = True
     log_performance: bool = True
@@ -26,9 +25,7 @@ class AppConfig:
 
 @dataclass(slots=True)
 class ExchangeConfig:
-    provider: str = "bithumb"
-    sample_ticker: str = "KRW-BTC"
-    quote_currency: str = "KRW"
+    sample_ticker: str = "BTCUSDT"
     public_retry_count: int = 2
     public_retry_delay_sec: float = 0.2
     timeout_sec: float = 8.0
@@ -36,12 +33,13 @@ class ExchangeConfig:
 
 @dataclass(slots=True)
 class BybitConfig:
-    enabled: bool = False
+    enabled: bool = True
     base_url: str = "https://api.bybit.com"
     category: str = "linear"
     quote_coin: str = "USDT"
     account_type: str = "UNIFIED"
     recv_window: int = 5000
+    position_idx: int = 0
     leverage: float = 2.0
     allow_long: bool = True
     allow_short: bool = True
@@ -56,21 +54,22 @@ class CollectorConfig:
     intervals: list[str] = field(default_factory=lambda: ["minute1", "minute5", "minute15"])
     extra_watchlist: list[str] = field(
         default_factory=lambda: [
-            "KRW-SOL",
-            "KRW-ADA",
-            "KRW-DOGE",
-            "KRW-AVAX",
-            "KRW-LINK",
-            "KRW-TRX",
-            "KRW-SUI",
-            "KRW-DOT",
-            "KRW-XLM",
-            "KRW-ATOM",
-            "KRW-BCH",
-            "KRW-ETC",
-            "KRW-NEAR",
-            "KRW-APT",
-            "KRW-FIL",
+            "BTCUSDT",
+            "ETHUSDT",
+            "SOLUSDT",
+            "XRPUSDT",
+            "ADAUSDT",
+            "DOGEUSDT",
+            "AVAXUSDT",
+            "LINKUSDT",
+            "TRXUSDT",
+            "SUIUSDT",
+            "DOTUSDT",
+            "XLMUSDT",
+            "ATOMUSDT",
+            "BCHUSDT",
+            "NEARUSDT",
+            "APTUSDT",
         ]
     )
 
@@ -101,11 +100,11 @@ class LLMConfig:
 
 @dataclass(slots=True)
 class TradeConfig:
-    seed_krw: float = 150000.0
+    seed_capital: float = 150.0
     slot_count: int = 3
-    min_order_krw: float = 5000.0
+    min_order_notional: float = 5.0
     max_spread_bps: float = 35.0
-    use_available_krw_as_seed: bool = True
+    use_available_balance_as_seed: bool = True
     order_retry_count: int = 2
     order_retry_delay_sec: float = 0.8
     order_fill_wait_sec: float = 2.5
@@ -137,7 +136,7 @@ class NewsConfig:
     enabled: bool = True
     refresh_interval_sec: int = 300
     per_source_limit: int = 30
-    use_bithumb_notice: bool = True
+    use_exchange_notice: bool = True
     use_coindesk_rss: bool = True
     use_naver_openapi: bool = False
     coindesk_rss_url: str = "https://www.coindesk.com/arc/outboundfeeds/rss/"
@@ -147,7 +146,7 @@ class NewsConfig:
 class NotificationConfig:
     enabled: bool = False
     discord_webhook_url: str = ""
-    username: str = "BithumbTradBot"
+    username: str = "BybitTradBot"
     timeout_sec: float = 5.0
     min_interval_sec: float = 1.0
     notify_on_startup: bool = True
@@ -193,6 +192,7 @@ def load_bot_config(config_path: str = "config.yaml") -> BotConfig:
 
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     merged = _deep_merge(default.to_dict(), raw)
+    merged = _normalize_legacy_keys(merged)
 
     return BotConfig(
         app=AppConfig(**_only_known_keys(AppConfig, merged["app"])),
@@ -233,3 +233,15 @@ def _notification_with_env(raw: dict[str, Any]) -> NotificationConfig:
     if not data.get("discord_webhook_url"):
         data["discord_webhook_url"] = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
     return NotificationConfig(**data)
+
+
+def _normalize_legacy_keys(merged: dict[str, Any]) -> dict[str, Any]:
+    trade = merged.get("trade")
+    if isinstance(trade, dict):
+        if "seed_capital" not in trade and "seed_krw" in trade:
+            trade["seed_capital"] = trade.get("seed_krw")
+        if "min_order_notional" not in trade and "min_order_krw" in trade:
+            trade["min_order_notional"] = trade.get("min_order_krw")
+        if "use_available_balance_as_seed" not in trade and "use_available_krw_as_seed" in trade:
+            trade["use_available_balance_as_seed"] = trade.get("use_available_krw_as_seed")
+    return merged

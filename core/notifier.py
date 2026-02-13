@@ -35,7 +35,7 @@ class DiscordNotifier:
     def __init__(
         self,
         webhook_url: str,
-        username: str = "BithumbTradBot",
+        username: str = "BybitTradBot",
         timeout_sec: float = 5.0,
         min_interval_sec: float = 1.0,
     ) -> None:

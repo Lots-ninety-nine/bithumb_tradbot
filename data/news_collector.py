@@ -39,10 +39,10 @@ class MarketNewsCollector:
         documents: list[NewsItem] = []
         source_counts: dict[str, int] = {}
 
-        if self.config.use_bithumb_notice:
-            notice_docs = self._fetch_bithumb_notices(symbols=symbols)
+        if self.config.use_exchange_notice:
+            notice_docs = self._fetch_exchange_notices(symbols=symbols)
             documents.extend(notice_docs)
-            source_counts["bithumb_notice"] = len(notice_docs)
+            source_counts["exchange_notice"] = len(notice_docs)
 
         if self.config.use_coindesk_rss:
             coindesk_docs = self._fetch_coindesk_rss(symbols=symbols)
@@ -62,8 +62,10 @@ class MarketNewsCollector:
             "source_counts": source_counts,
         }
 
-    def _fetch_bithumb_notices(self, symbols: list[str]) -> list[NewsItem]:
-        notices = self.exchange.get_bithumb_notices(
+    def _fetch_exchange_notices(self, symbols: list[str]) -> list[NewsItem]:
+        if not hasattr(self.exchange, "get_exchange_notices"):
+            return []
+        notices = self.exchange.get_exchange_notices(
             page=1,
             limit=self.config.per_source_limit,
         )
@@ -89,11 +91,11 @@ class MarketNewsCollector:
             for ticker in self._infer_tickers(title=title, summary=body, symbols=symbols):
                 docs.append(
                     NewsItem(
-                        id=f"bithumb_notice:{notice_id or hash((title, ts, ticker))}",
+                        id=f"exchange_notice:{notice_id or hash((title, ts, ticker))}",
                         ticker=ticker,
                         title=title,
                         summary=body[:600],
-                        source="bithumb_notice",
+                        source="exchange_notice",
                         published_at=ts,
                         url=url,
                     )
