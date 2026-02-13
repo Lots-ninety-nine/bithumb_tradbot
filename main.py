@@ -22,7 +22,12 @@ LOGGER = logging.getLogger("tradbot")
 class TradingOrchestrator:
     """Integrates Data/Intelligence/Risk agents."""
 
-    def __init__(self, loop_interval_sec: int = 60, dry_run: bool = True) -> None:
+    def __init__(
+        self,
+        loop_interval_sec: int = 60,
+        dry_run: bool = True,
+        min_buy_confidence: float = 0.7,
+    ) -> None:
         self.loop_interval_sec = loop_interval_sec
         self.dry_run = dry_run
 
@@ -36,7 +41,10 @@ class TradingOrchestrator:
         self.exchange = BithumbExchange()
         self.collector = MarketDataCollector(exchange=self.exchange)
         self.rag_store = SimpleRAGStore()
-        self.analyzer = GeminiAnalyzer(model_name="gemini-1.5-flash")
+        self.analyzer = GeminiAnalyzer(
+            model_name="gemini-1.5-flash",
+            min_buy_confidence=min_buy_confidence,
+        )
         self.risk = RiskManager()
 
     def run_once(self) -> None:
@@ -66,7 +74,7 @@ class TradingOrchestrator:
             if not signal.is_buy_candidate:
                 continue
 
-            news_context = self.rag_store.latest_for_ticker(ticker=ticker, limit=3)
+            news_context = self.rag_store.query_for_trade(ticker=ticker, limit=3)
             recent_frame = frame.tail(40).reset_index()
             if len(recent_frame.columns) > 0:
                 recent_frame = recent_frame.rename(columns={recent_frame.columns[0]: "timestamp"})
@@ -81,7 +89,16 @@ class TradingOrchestrator:
             )
             LOGGER.info("%s signal=%s llm=%s", ticker, asdict(signal), asdict(llm_decision))
 
-            if llm_decision.decision != "BUY":
+            if not self.analyzer.allow_buy(llm_decision):
+                LOGGER.info(
+                    "%s LLM buy gate blocked decision=%s confidence=%.2f dead_cat=%.2f",
+                    ticker,
+                    llm_decision.decision,
+                    llm_decision.confidence,
+                    llm_decision.dead_cat_bounce_risk
+                    if llm_decision.dead_cat_bounce_risk is not None
+                    else -1.0,
+                )
                 continue
             if not self.risk.can_open(ticker):
                 continue
@@ -178,6 +195,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable real order execution (default: dry-run).",
     )
+    parser.add_argument(
+        "--min-buy-confidence",
+        type=float,
+        default=0.7,
+        help="Minimum Gemini confidence required for BUY execution.",
+    )
     return parser.parse_args()
 
 
@@ -245,7 +268,11 @@ def main() -> None:
     if args.validate_data:
         raise SystemExit(run_data_validation())
 
-    orchestrator = TradingOrchestrator(loop_interval_sec=args.interval, dry_run=not args.live)
+    orchestrator = TradingOrchestrator(
+        loop_interval_sec=args.interval,
+        dry_run=not args.live,
+        min_buy_confidence=args.min_buy_confidence,
+    )
     if args.run_once:
         orchestrator.run_once()
         return

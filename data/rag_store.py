@@ -75,6 +75,13 @@ class SimpleRAGStore:
             ]
         return [asdict(item) for item in selected[:limit]]
 
+    def query_for_trade(self, ticker: str, limit: int = 3) -> list[dict]:
+        """Trade-time context query with ticker keyword fallback."""
+        direct = self.latest_for_ticker(ticker=ticker, limit=limit)
+        if direct:
+            return direct
+        return self.search(query=ticker, limit=limit)
+
     def search(self, query: str, limit: int = 3) -> list[dict]:
         ranked = sorted(
             self.items,

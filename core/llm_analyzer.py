@@ -26,14 +26,16 @@ class LLMDecision:
     decision: str
     reason: str
     confidence: float
+    dead_cat_bounce_risk: float | None = None
 
 
 class GeminiAnalyzer:
     """Gemini based market context analyzer."""
 
-    def __init__(self, model_name: str = "gemini-1.5-flash") -> None:
+    def __init__(self, model_name: str = "gemini-1.5-flash", min_buy_confidence: float = 0.7) -> None:
         load_dotenv()
         self.model_name = model_name
+        self.min_buy_confidence = min_buy_confidence
         self._model = None
 
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -58,6 +60,7 @@ class GeminiAnalyzer:
                 decision="HOLD",
                 reason="Gemini not configured; fallback to HOLD",
                 confidence=0.0,
+                dead_cat_bounce_risk=None,
             )
 
         prompt = self._build_prompt(
@@ -76,6 +79,7 @@ class GeminiAnalyzer:
                 decision="HOLD",
                 reason=f"Gemini call failed: {exc}",
                 confidence=0.0,
+                dead_cat_bounce_risk=None,
             )
 
     def _build_prompt(
@@ -95,7 +99,8 @@ class GeminiAnalyzer:
             "너는 한국 암호화폐 트레이딩 리스크 분석가다.\n"
             "아래 JSON을 읽고, 현재 반등이 데드캣 바운스일 가능성을 평가하라.\n"
             "반드시 JSON 한 줄만 출력하라: "
-            '{"decision":"BUY|HOLD|SELL","reason":"...","confidence":0.0}\n'
+            '{"decision":"BUY|HOLD|SELL","reason":"...","confidence":0.0,'
+            '"dead_cat_bounce_risk":0.0}\n'
             f"INPUT={json.dumps(payload, ensure_ascii=False)}"
         )
 
@@ -112,17 +117,39 @@ class GeminiAnalyzer:
             reason = str(data.get("reason", "No reason returned"))
             confidence = float(data.get("confidence", 0.0))
             confidence = max(0.0, min(1.0, confidence))
+            dead_cat = data.get("dead_cat_bounce_risk")
+            if dead_cat is not None:
+                dead_cat = max(0.0, min(1.0, float(dead_cat)))
             if decision not in {"BUY", "HOLD", "SELL"}:
                 decision = "HOLD"
-            return LLMDecision(decision=decision, reason=reason, confidence=confidence)
+            return LLMDecision(
+                decision=decision,
+                reason=reason,
+                confidence=confidence,
+                dead_cat_bounce_risk=dead_cat,
+            )
         except Exception:
             fallback = LLMDecision(
                 decision="HOLD",
                 reason=f"Unparseable Gemini output: {raw_text[:160]}",
                 confidence=0.0,
+                dead_cat_bounce_risk=None,
             )
             return fallback
 
     @staticmethod
     def to_dict(decision: LLMDecision) -> dict[str, Any]:
         return asdict(decision)
+
+    def allow_buy(self, decision: LLMDecision, max_dead_cat_risk: float = 0.55) -> bool:
+        """BUY 실행 승인 게이트."""
+        if decision.decision != "BUY":
+            return False
+        if decision.confidence < self.min_buy_confidence:
+            return False
+        if (
+            decision.dead_cat_bounce_risk is not None
+            and decision.dead_cat_bounce_risk > max_dead_cat_risk
+        ):
+            return False
+        return True
