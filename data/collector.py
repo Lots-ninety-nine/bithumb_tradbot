@@ -39,20 +39,27 @@ class MarketDataCollector:
         self,
         exchange: BithumbExchange,
         intervals: tuple[str, ...] = ("minute1", "minute5", "minute15"),
-        top_n: int = 5,
+        top_n: int = 15,
+        max_watchlist: int = 25,
         candle_count: int = 200,
+        extra_watchlist: tuple[str, ...] = (),
     ) -> None:
         self.exchange = exchange
         self.intervals = intervals
         self.top_n = top_n
+        self.max_watchlist = max_watchlist
         self.candle_count = candle_count
+        self.extra_watchlist = list(extra_watchlist)
         self.watchlist: list[str] = []
         self.snapshots: dict[str, TickerSnapshot] = {}
 
     def refresh_watchlist(self) -> list[str]:
-        tickers = self.exchange.get_top_volume_tickers(limit=self.top_n)
-        self.watchlist = tickers
-        return tickers
+        top_tickers = self.exchange.get_top_volume_tickers(limit=self.top_n)
+        merged = self._merge_watchlist(top_tickers, self.extra_watchlist)
+        if self.max_watchlist > 0:
+            merged = merged[: self.max_watchlist]
+        self.watchlist = merged
+        return merged
 
     def collect_once(self) -> dict[str, TickerSnapshot]:
         """Collect one full pass for the current watchlist."""
@@ -79,6 +86,17 @@ class MarketDataCollector:
 
         self.snapshots = result
         return result
+
+    def _merge_watchlist(self, top_tickers: list[str], extra_watchlist: list[str]) -> list[str]:
+        seen: set[str] = set()
+        merged: list[str] = []
+        for ticker in [*top_tickers, *extra_watchlist]:
+            norm = self.exchange.normalize_market(ticker).upper()
+            if norm in seen:
+                continue
+            seen.add(norm)
+            merged.append(norm)
+        return merged
 
     def get_data_quality_report(self, min_rows: int = 60) -> dict[str, list[dict[str, Any]]]:
         """Return lightweight data quality report for collected snapshots."""

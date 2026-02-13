@@ -35,6 +35,7 @@ class TradingOrchestrator:
         self.min_order_krw = float(config.trade.min_order_krw)
         self.max_dead_cat_risk = float(config.llm.max_dead_cat_risk)
         self.frame_priority = tuple(config.strategy.interval_priority)
+        self.log_api_usage = bool(config.app.log_api_usage)
         self._started_notified = False
 
         from core.llm_analyzer import GeminiAnalyzer
@@ -67,7 +68,9 @@ class TradingOrchestrator:
             exchange=self.exchange,
             intervals=tuple(config.collector.intervals),
             top_n=config.collector.top_n,
+            max_watchlist=config.collector.max_watchlist,
             candle_count=config.collector.candle_count,
+            extra_watchlist=tuple(config.collector.extra_watchlist),
         )
         self.rag_store = SimpleRAGStore()
         self.news_collector = MarketNewsCollector(
@@ -91,140 +94,143 @@ class TradingOrchestrator:
         self.notifier = self._build_notifier(config=config)
 
     def run_once(self) -> None:
-        if not self.collector.watchlist:
-            watchlist = self.collector.refresh_watchlist()
-            LOGGER.info("Watchlist updated: %s", watchlist)
-        self._refresh_news_if_needed()
+        try:
+            if not self.collector.watchlist:
+                watchlist = self.collector.refresh_watchlist()
+                LOGGER.info("Watchlist updated: %s", watchlist)
+            self._refresh_news_if_needed()
 
-        snapshots = self.collector.collect_once()
-        if not snapshots:
-            LOGGER.info("No market data collected. Skip this cycle.")
-            return
+            snapshots = self.collector.collect_once()
+            if not snapshots:
+                LOGGER.info("No market data collected. Skip this cycle.")
+                return
 
-        for ticker, snapshot in snapshots.items():
-            frame = self._pick_frame(snapshot.candles)
-            if frame is None or frame.empty:
-                continue
+            for ticker, snapshot in snapshots.items():
+                frame = self._pick_frame(snapshot.candles)
+                if frame is None or frame.empty:
+                    continue
 
-            signal = self._evaluate_hard_rule(frame, config=self._rule_config)
-            if not signal.is_buy_candidate:
-                continue
+                signal = self._evaluate_hard_rule(frame, config=self._rule_config)
+                if not signal.is_buy_candidate:
+                    continue
 
-            advanced = self._evaluate_advanced_signals(
-                frame=frame,
-                orderbook=snapshot.orderbook,
-                config=self._advanced_config,
-            )
-            if self._advanced_config.enabled and not advanced.buy_bias:
-                LOGGER.info(
-                    "%s advanced gate blocked score=%.3f reasons=%s",
-                    ticker,
-                    advanced.total_score,
-                    advanced.reasons,
+                advanced = self._evaluate_advanced_signals(
+                    frame=frame,
+                    orderbook=snapshot.orderbook,
+                    config=self._advanced_config,
                 )
-                continue
-
-            asset_symbol = ticker.split("-")[-1] if "-" in ticker else ticker
-            news_context = self.rag_store.query_for_trade(ticker=asset_symbol, limit=3)
-            recent_frame = frame.tail(40).reset_index()
-            if len(recent_frame.columns) > 0:
-                recent_frame = recent_frame.rename(columns={recent_frame.columns[0]: "timestamp"})
-            if "timestamp" in recent_frame.columns:
-                recent_frame["timestamp"] = recent_frame["timestamp"].astype(str)
-            recent_candles = recent_frame.to_dict(orient="records")
-
-            llm_decision = self.analyzer.analyze(
-                ticker=ticker,
-                technical_payload={
-                    "hard_rule": asdict(signal),
-                    "advanced": advanced.to_dict(),
-                },
-                candle_payload=recent_candles,
-                rag_payload=news_context,
-            )
-            LOGGER.info(
-                "%s hard=%s advanced=%s llm=%s",
-                ticker,
-                asdict(signal),
-                advanced.to_dict(),
-                asdict(llm_decision),
-            )
-
-            if not self.analyzer.allow_buy(llm_decision, max_dead_cat_risk=self.max_dead_cat_risk):
-                LOGGER.info(
-                    "%s LLM buy gate blocked decision=%s confidence=%.2f dead_cat=%.2f",
-                    ticker,
-                    llm_decision.decision,
-                    llm_decision.confidence,
-                    llm_decision.dead_cat_bounce_risk
-                    if llm_decision.dead_cat_bounce_risk is not None
-                    else -1.0,
-                )
-                continue
-            if not self.risk.can_open(ticker):
-                continue
-
-            current_price = float(frame.iloc[-1]["close"])
-            if current_price <= 0:
-                continue
-
-            quantity = self.risk.slot_budget_krw / current_price
-            order_value_krw = quantity * current_price
-            if order_value_krw < self.min_order_krw:
-                LOGGER.info(
-                    "%s skipped by min order rule value=%.2f min=%.2f",
-                    ticker,
-                    order_value_krw,
-                    self.min_order_krw,
-                )
-                continue
-
-            spread_bps = self._calc_spread_bps(snapshot.orderbook)
-            if spread_bps is not None and spread_bps > self.max_spread_bps:
-                LOGGER.info(
-                    "%s skipped by spread rule spread_bps=%.2f max=%.2f",
-                    ticker,
-                    spread_bps,
-                    self.max_spread_bps,
-                )
-                continue
-
-            position = self.risk.open_position(
-                ticker=ticker,
-                quantity=quantity,
-                entry_price=current_price,
-            )
-            if position is None:
-                continue
-
-            if self.dry_run or not self.exchange.trading_enabled:
-                LOGGER.info(
-                    "[DRY-RUN] BUY %s qty=%.8f price=%.2f slot=%s",
-                    ticker,
-                    quantity,
-                    current_price,
-                    position.slot_id,
-                )
-            else:
-                self.exchange.market_buy(ticker=ticker, quantity=quantity)
-                LOGGER.info("BUY executed for %s", ticker)
-
-            if self.config.notification.notify_on_buy:
-                self._notify(
-                    NotifyEvent(
-                        title="BUY Signal",
-                        description=f"{ticker} 진입 처리",
-                        level="success",
-                        fields=[
-                            DiscordNotifier.field("ticker", ticker, inline=True),
-                            DiscordNotifier.field("qty", f"{quantity:.8f}", inline=True),
-                            DiscordNotifier.field("price", f"{current_price:.2f}", inline=True),
-                            DiscordNotifier.field("dry_run", self.dry_run, inline=True),
-                        ],
+                if self._advanced_config.enabled and not advanced.buy_bias:
+                    LOGGER.info(
+                        "%s advanced gate blocked score=%.3f reasons=%s",
+                        ticker,
+                        advanced.total_score,
+                        advanced.reasons,
                     )
+                    continue
+
+                asset_symbol = ticker.split("-")[-1] if "-" in ticker else ticker
+                news_context = self.rag_store.query_for_trade(ticker=asset_symbol, limit=3)
+                recent_frame = frame.tail(40).reset_index()
+                if len(recent_frame.columns) > 0:
+                    recent_frame = recent_frame.rename(columns={recent_frame.columns[0]: "timestamp"})
+                if "timestamp" in recent_frame.columns:
+                    recent_frame["timestamp"] = recent_frame["timestamp"].astype(str)
+                recent_candles = recent_frame.to_dict(orient="records")
+
+                llm_decision = self.analyzer.analyze(
+                    ticker=ticker,
+                    technical_payload={
+                        "hard_rule": asdict(signal),
+                        "advanced": advanced.to_dict(),
+                    },
+                    candle_payload=recent_candles,
+                    rag_payload=news_context,
+                )
+                LOGGER.info(
+                    "%s hard=%s advanced=%s llm=%s",
+                    ticker,
+                    asdict(signal),
+                    advanced.to_dict(),
+                    asdict(llm_decision),
                 )
 
-        self._check_open_positions()
+                if not self.analyzer.allow_buy(llm_decision, max_dead_cat_risk=self.max_dead_cat_risk):
+                    LOGGER.info(
+                        "%s LLM buy gate blocked decision=%s confidence=%.2f dead_cat=%.2f",
+                        ticker,
+                        llm_decision.decision,
+                        llm_decision.confidence,
+                        llm_decision.dead_cat_bounce_risk
+                        if llm_decision.dead_cat_bounce_risk is not None
+                        else -1.0,
+                    )
+                    continue
+                if not self.risk.can_open(ticker):
+                    continue
+
+                current_price = float(frame.iloc[-1]["close"])
+                if current_price <= 0:
+                    continue
+
+                quantity = self.risk.slot_budget_krw / current_price
+                order_value_krw = quantity * current_price
+                if order_value_krw < self.min_order_krw:
+                    LOGGER.info(
+                        "%s skipped by min order rule value=%.2f min=%.2f",
+                        ticker,
+                        order_value_krw,
+                        self.min_order_krw,
+                    )
+                    continue
+
+                spread_bps = self._calc_spread_bps(snapshot.orderbook)
+                if spread_bps is not None and spread_bps > self.max_spread_bps:
+                    LOGGER.info(
+                        "%s skipped by spread rule spread_bps=%.2f max=%.2f",
+                        ticker,
+                        spread_bps,
+                        self.max_spread_bps,
+                    )
+                    continue
+
+                position = self.risk.open_position(
+                    ticker=ticker,
+                    quantity=quantity,
+                    entry_price=current_price,
+                )
+                if position is None:
+                    continue
+
+                if self.dry_run or not self.exchange.trading_enabled:
+                    LOGGER.info(
+                        "[DRY-RUN] BUY %s qty=%.8f price=%.2f slot=%s",
+                        ticker,
+                        quantity,
+                        current_price,
+                        position.slot_id,
+                    )
+                else:
+                    self.exchange.market_buy(ticker=ticker, quantity=quantity)
+                    LOGGER.info("BUY executed for %s", ticker)
+
+                if self.config.notification.notify_on_buy:
+                    self._notify(
+                        NotifyEvent(
+                            title="BUY Signal",
+                            description=f"{ticker} 진입 처리",
+                            level="success",
+                            fields=[
+                                DiscordNotifier.field("ticker", ticker, inline=True),
+                                DiscordNotifier.field("qty", f"{quantity:.8f}", inline=True),
+                                DiscordNotifier.field("price", f"{current_price:.2f}", inline=True),
+                                DiscordNotifier.field("dry_run", self.dry_run, inline=True),
+                            ],
+                        )
+                    )
+
+            self._check_open_positions()
+        finally:
+            self.log_api_usage_summary(reset=True)
 
     def _check_open_positions(self) -> None:
         for slot_id, position in list(self.risk.positions.items()):
@@ -359,6 +365,38 @@ class TradingOrchestrator:
             return
         self.notifier.send(event)
 
+    def log_api_usage_summary(self, reset: bool = True) -> None:
+        if not self.log_api_usage:
+            return
+        usage = self.exchange.get_api_usage_snapshot(reset=reset)
+        public = usage.get("public", {})
+        private = usage.get("private", {})
+        LOGGER.info(
+            "API usage public(total=%s success=%s fail=%s) private(total=%s success=%s fail=%s)",
+            public.get("total", 0),
+            public.get("success", 0),
+            public.get("fail", 0),
+            private.get("total", 0),
+            private.get("success", 0),
+            private.get("fail", 0),
+        )
+
+        top_paths = sorted(
+            (public.get("by_path") or {}).items(),
+            key=lambda x: x[1].get("total", 0),
+            reverse=True,
+        )[:6]
+        if top_paths:
+            compact = {
+                path: {
+                    "t": stat.get("total", 0),
+                    "s": stat.get("success", 0),
+                    "f": stat.get("fail", 0),
+                }
+                for path, stat in top_paths
+            }
+            LOGGER.info("API public by_path(top): %s", compact)
+
     def _pick_frame(self, candles: dict[str, Any]):
         for interval in self.frame_priority:
             frame = candles.get(interval)
@@ -469,7 +507,9 @@ def run_data_validation(config: BotConfig) -> int:
         exchange=exchange,
         intervals=tuple(config.collector.intervals),
         top_n=config.collector.top_n,
+        max_watchlist=config.collector.max_watchlist,
         candle_count=config.collector.candle_count,
+        extra_watchlist=tuple(config.collector.extra_watchlist),
     )
 
     watchlist = collector.refresh_watchlist()

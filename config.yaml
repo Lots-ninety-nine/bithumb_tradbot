@@ -8,6 +8,7 @@ app:
   max_consecutive_errors: 5
   enable_official_orders: false
   log_level: INFO
+  log_api_usage: true
 
 exchange:
   sample_ticker: KRW-BTC
@@ -17,12 +18,29 @@ exchange:
   timeout_sec: 8.0
 
 collector:
-  top_n: 5
+  top_n: 15
+  max_watchlist: 25
   candle_count: 200
   intervals:
     - minute1
     - minute5
     - minute15
+  extra_watchlist:
+    - KRW-SOL
+    - KRW-ADA
+    - KRW-DOGE
+    - KRW-AVAX
+    - KRW-LINK
+    - KRW-TRX
+    - KRW-SUI
+    - KRW-DOT
+    - KRW-XLM
+    - KRW-ATOM
+    - KRW-BCH
+    - KRW-ETC
+    - KRW-NEAR
+    - KRW-APT
+    - KRW-FIL
 
 strategy:
   interval_priority:

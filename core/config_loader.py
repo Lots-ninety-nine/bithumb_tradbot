@@ -18,6 +18,7 @@ class AppConfig:
     max_consecutive_errors: int = 5
     enable_official_orders: bool = False
     log_level: str = "INFO"
+    log_api_usage: bool = True
 
 
 @dataclass(slots=True)
@@ -31,9 +32,29 @@ class ExchangeConfig:
 
 @dataclass(slots=True)
 class CollectorConfig:
-    top_n: int = 5
+    top_n: int = 15
+    max_watchlist: int = 25
     candle_count: int = 200
     intervals: list[str] = field(default_factory=lambda: ["minute1", "minute5", "minute15"])
+    extra_watchlist: list[str] = field(
+        default_factory=lambda: [
+            "KRW-SOL",
+            "KRW-ADA",
+            "KRW-DOGE",
+            "KRW-AVAX",
+            "KRW-LINK",
+            "KRW-TRX",
+            "KRW-SUI",
+            "KRW-DOT",
+            "KRW-XLM",
+            "KRW-ATOM",
+            "KRW-BCH",
+            "KRW-ETC",
+            "KRW-NEAR",
+            "KRW-APT",
+            "KRW-FIL",
+        ]
+    )
 
 
 @dataclass(slots=True)

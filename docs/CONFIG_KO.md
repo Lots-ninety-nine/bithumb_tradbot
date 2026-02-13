@@ -55,6 +55,7 @@ BITHUMB_API_BASE_URL=https://api.bithumb.com
 - `app.dry_run`: `true`면 주문 없이 로그만 출력
 - `app.enable_official_orders`: REST 주문 API 허용 여부
 - `app.interval_sec`: 루프 주기(초)
+- `app.log_api_usage`: 사이클마다 API 사용량 요약 로그 출력 여부
 
 ### 뉴스/RAG
 - `news.enabled`: 뉴스 자동수집 on/off
@@ -79,6 +80,12 @@ BITHUMB_API_BASE_URL=https://api.bithumb.com
 - `notification.notify_on_buy`: 매수 알림
 - `notification.notify_on_sell`: 매도 알림
 
+### 감시 종목(코인 수 조절)
+- `collector.top_n`: 거래량 상위 종목 개수
+- `collector.extra_watchlist`: 추가로 항상 볼 유명 코인 목록
+- `collector.max_watchlist`: 최종 감시종목 최대 개수
+- 코인 수를 늘리면 분석 범위는 넓어지지만 API 호출량과 루프 지연이 함께 증가합니다.
+
 ## 4. 추천 시작값
 
 초기에는 아래처럼 보수적으로 시작하세요.
@@ -91,6 +98,7 @@ BITHUMB_API_BASE_URL=https://api.bithumb.com
 - `news.enabled: true`
 - `advanced.enabled: true`
 - `notification.enabled: false` (초기엔 비활성 권장)
+- `collector.top_n: 15`, `collector.max_watchlist: 25`
 
 드라이런 로그를 본 뒤에만 실거래로 전환하는 걸 권장합니다.
 

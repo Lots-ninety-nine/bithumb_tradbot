@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 import hashlib
 import logging
 import os
@@ -114,6 +115,10 @@ class BithumbExchange:
 
         self._private_client = None
         self._session = requests.Session() if requests is not None else None
+        self._api_usage: dict[str, Any] = {
+            "public": {"total": 0, "success": 0, "fail": 0, "by_path": {}},
+            "private": {"total": 0, "success": 0, "fail": 0, "by_path": {}},
+        }
 
         if pybithumb is not None and self.credentials.is_ready:
             try:
@@ -383,6 +388,20 @@ class BithumbExchange:
         scored.sort(key=lambda x: x[0], reverse=True)
         return [ticker for _, ticker in scored[:limit]]
 
+    def normalize_market(self, ticker: str) -> str:
+        """Public helper for market code normalization."""
+        return self._normalize_market(ticker)
+
+    def get_api_usage_snapshot(self, reset: bool = False) -> dict[str, Any]:
+        """Return API usage counters for public/private calls."""
+        snapshot = deepcopy(self._api_usage)
+        if reset:
+            self._api_usage = {
+                "public": {"total": 0, "success": 0, "fail": 0, "by_path": {}},
+                "private": {"total": 0, "success": 0, "fail": 0, "by_path": {}},
+            }
+        return snapshot
+
     def get_bithumb_notices(self, page: int = 1, limit: int = 20) -> list[dict[str, Any]]:
         """Fetch Bithumb notices.
 
@@ -413,12 +432,15 @@ class BithumbExchange:
 
         def _fetch() -> Any:
             assert self._session is not None
+            self._mark_api_usage(kind="public", path=path, success=False, before_call=True)
             response = self._session.get(
                 f"{self.base_url}{path}",
                 params=params,
                 timeout=self.timeout_sec,
             )
-            return self._decode_response(response)
+            payload = self._decode_response(response)
+            self._mark_api_usage(kind="public", path=path, success=True, before_call=False)
+            return payload
 
         return self._retry_public(_fetch, f"GET {path}")
 
@@ -441,6 +463,7 @@ class BithumbExchange:
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json; charset=utf-8",
         }
+        self._mark_api_usage(kind="private", path=path, success=False, before_call=True)
         response = self._session.request(
             method=method.upper(),
             url=f"{self.base_url}{path}",
@@ -449,7 +472,13 @@ class BithumbExchange:
             headers=headers,
             timeout=self.timeout_sec,
         )
-        return self._decode_response(response)
+        try:
+            payload = self._decode_response(response)
+            self._mark_api_usage(kind="private", path=path, success=True, before_call=False)
+            return payload
+        except Exception:
+            self._mark_api_usage(kind="private", path=path, success=False, before_call=False)
+            raise
 
     def _build_jwt_token(self, query_dict: dict[str, Any] | None = None) -> str:
         assert jwt is not None
@@ -563,6 +592,8 @@ class BithumbExchange:
                 return fn()
             except Exception as exc:
                 last_exc = exc
+                kind, path = self._extract_kind_path_from_label(label)
+                self._mark_api_usage(kind=kind, path=path, success=False, before_call=False)
                 LOGGER.warning(
                     "Public API failed (%s) attempt=%s/%s: %s",
                     label,
@@ -582,6 +613,29 @@ class BithumbExchange:
         if "-" in value:
             return value
         return f"{self.quote_currency}-{value}"
+
+    def _mark_api_usage(self, kind: str, path: str, success: bool, before_call: bool) -> None:
+        bucket = self._api_usage.get(kind)
+        if not isinstance(bucket, dict):
+            return
+        by_path = bucket.setdefault("by_path", {})
+        path_stat = by_path.setdefault(path, {"total": 0, "success": 0, "fail": 0})
+        if before_call:
+            bucket["total"] += 1
+            path_stat["total"] += 1
+            return
+        if success:
+            bucket["success"] += 1
+            path_stat["success"] += 1
+        else:
+            bucket["fail"] += 1
+            path_stat["fail"] += 1
+
+    @staticmethod
+    def _extract_kind_path_from_label(label: str) -> tuple[str, str]:
+        if label.startswith("GET "):
+            return "public", label.replace("GET ", "", 1).strip()
+        return "public", label
 
     @staticmethod
     def _asset_symbol(ticker: str) -> str:
