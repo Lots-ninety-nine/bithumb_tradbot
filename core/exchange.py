@@ -313,6 +313,7 @@ class BithumbExchange:
         total = 0.0
         try:
             accounts = self.get_accounts()
+            krw_markets = set(self.get_market_codes(quote=self.quote_currency))
         except Exception:
             return None
 
@@ -331,6 +332,8 @@ class BithumbExchange:
                 continue
 
             market = f"{self.quote_currency}-{currency}"
+            if market not in krw_markets:
+                continue
             price = self.get_current_price(market)
             if price is None:
                 continue
