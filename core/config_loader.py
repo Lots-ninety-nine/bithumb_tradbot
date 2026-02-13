@@ -80,6 +80,12 @@ class TradeConfig:
     slot_count: int = 3
     min_order_krw: float = 5000.0
     max_spread_bps: float = 35.0
+    use_available_krw_as_seed: bool = True
+    order_retry_count: int = 2
+    order_retry_delay_sec: float = 0.8
+    order_fill_wait_sec: float = 2.5
+    order_fill_poll_sec: float = 0.5
+    cancel_unfilled_before_retry: bool = True
 
 
 @dataclass(slots=True)

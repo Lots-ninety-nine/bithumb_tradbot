@@ -36,6 +36,12 @@ class TradingOrchestrator:
         self.max_consecutive_errors = int(config.app.max_consecutive_errors)
         self.max_spread_bps = float(config.trade.max_spread_bps)
         self.min_order_krw = float(config.trade.min_order_krw)
+        self.use_available_krw_as_seed = bool(config.trade.use_available_krw_as_seed)
+        self.order_retry_count = int(config.trade.order_retry_count)
+        self.order_retry_delay_sec = float(config.trade.order_retry_delay_sec)
+        self.order_fill_wait_sec = float(config.trade.order_fill_wait_sec)
+        self.order_fill_poll_sec = float(config.trade.order_fill_poll_sec)
+        self.cancel_unfilled_before_retry = bool(config.trade.cancel_unfilled_before_retry)
         self.max_dead_cat_risk = float(config.llm.max_dead_cat_risk)
         self.frame_priority = tuple(config.strategy.interval_priority)
         self.log_api_usage = bool(config.app.log_api_usage)
@@ -175,7 +181,8 @@ class TradingOrchestrator:
                 if current_price <= 0:
                     continue
 
-                quantity = self.risk.slot_budget_krw / current_price
+                slot_budget_krw = self._resolve_slot_budget_krw()
+                quantity = slot_budget_krw / current_price
                 order_value_krw = quantity * current_price
                 if order_value_krw < self.min_order_krw:
                     LOGGER.info(
@@ -213,8 +220,22 @@ class TradingOrchestrator:
                         position.slot_id,
                     )
                 else:
-                    self.exchange.market_buy(ticker=ticker, quantity=quantity)
-                    LOGGER.info("BUY executed for %s", ticker)
+                    try:
+                        self.exchange.execute_market_buy(
+                            ticker=ticker,
+                            quantity=quantity,
+                            price_krw=slot_budget_krw,
+                            order_retry_count=self.order_retry_count,
+                            order_retry_delay_sec=self.order_retry_delay_sec,
+                            order_fill_wait_sec=self.order_fill_wait_sec,
+                            order_fill_poll_sec=self.order_fill_poll_sec,
+                            cancel_unfilled_before_retry=self.cancel_unfilled_before_retry,
+                        )
+                        LOGGER.info("BUY executed for %s", ticker)
+                    except Exception as exc:
+                        self.risk.close_position(position.slot_id)
+                        LOGGER.warning("BUY failed for %s: %s", ticker, exc)
+                        continue
 
                 if self.config.notification.notify_on_buy:
                     self._notify(
@@ -253,8 +274,20 @@ class TradingOrchestrator:
                     slot_id,
                 )
             else:
-                self.exchange.market_sell(ticker=position.ticker, quantity=position.quantity)
-                LOGGER.info("SELL executed for %s reason=%s", position.ticker, decision.reason)
+                try:
+                    self.exchange.execute_market_sell(
+                        ticker=position.ticker,
+                        quantity=position.quantity,
+                        order_retry_count=self.order_retry_count,
+                        order_retry_delay_sec=self.order_retry_delay_sec,
+                        order_fill_wait_sec=self.order_fill_wait_sec,
+                        order_fill_poll_sec=self.order_fill_poll_sec,
+                        cancel_unfilled_before_retry=self.cancel_unfilled_before_retry,
+                    )
+                    LOGGER.info("SELL executed for %s reason=%s", position.ticker, decision.reason)
+                except Exception as exc:
+                    LOGGER.warning("SELL failed for %s: %s", position.ticker, exc)
+                    continue
             self.risk.close_position(slot_id)
 
             if self.config.notification.notify_on_sell:
@@ -370,6 +403,20 @@ class TradingOrchestrator:
         if not ok:
             LOGGER.warning("Notification send failed: title=%s", event.title)
         return ok
+
+    def _resolve_slot_budget_krw(self) -> float:
+        fallback = self.risk.slot_budget_krw
+        if not self.use_available_krw_as_seed:
+            return fallback
+        if self.dry_run:
+            return fallback
+
+        available_krw = self.exchange.get_available_krw()
+        if available_krw is None or available_krw <= 0:
+            return fallback
+
+        free_slots = max(1, len(self.risk.available_slots()))
+        return max(0.0, available_krw / free_slots)
 
     def log_api_usage_summary(self, reset: bool = True) -> None:
         if not self.log_api_usage:

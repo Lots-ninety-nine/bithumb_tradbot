@@ -54,6 +54,12 @@ BITHUMB_API_BASE_URL=https://api.bithumb.com
 - `trade.min_order_krw`: 최소 주문 금액
 - `trade.slot_count`: 동시 포지션 슬롯 수
 - `trade.seed_krw`: 총 운용 자본
+- `trade.use_available_krw_as_seed`: `true`면 가용 KRW(실현손익 반영) 기준으로 다음 주문 금액 계산
+- `trade.order_retry_count`: 주문 실패/미체결 시 재시도 횟수
+- `trade.order_retry_delay_sec`: 주문 재시도 간 대기 시간(초)
+- `trade.order_fill_wait_sec`: 주문 체결 대기 시간(초)
+- `trade.order_fill_poll_sec`: 체결 상태 조회 주기(초)
+- `trade.cancel_unfilled_before_retry`: 미체결 주문 취소 후 재주문 여부
 
 ### 운영
 - `app.dry_run`: `true`면 주문 없이 로그만 출력

@@ -279,6 +279,32 @@ class BithumbExchange:
 
         raise RuntimeError("Private API disabled. Check credentials and PyJWT.")
 
+    def get_available_krw(self) -> float | None:
+        """Fetch available KRW balance for position sizing."""
+        if self.private_api_enabled:
+            for row in self.get_accounts():
+                if str(row.get("currency", "")).upper() != "KRW":
+                    continue
+                value = self._extract_float(
+                    row,
+                    ["balance", "available_balance", "available", "free"],
+                )
+                if value is not None:
+                    return value
+            return None
+
+        if self._private_client is not None:
+            try:
+                raw = self._private_client.get_balance("KRW")
+                if isinstance(raw, (tuple, list)) and raw:
+                    return float(raw[0])
+                if isinstance(raw, dict):
+                    return self._extract_float(raw, ["available_krw", "balance", "available"])
+            except Exception:
+                return None
+
+        return None
+
     def get_order_chance(self, ticker: str) -> dict[str, Any] | None:
         """Fetch order chance info for a market."""
         market = self._normalize_market(ticker)
@@ -294,6 +320,15 @@ class BithumbExchange:
             raise RuntimeError("Official REST order execution is disabled.")
         result = self._private_request("POST", "/v2/orders", json_body=payload)
         return result if isinstance(result, dict) else None
+
+    def get_order(self, uuid_value: str) -> dict[str, Any] | None:
+        """Get order status by uuid."""
+        result = self._private_request("GET", "/v1/order", params={"uuid": uuid_value})
+        if isinstance(result, dict):
+            if isinstance(result.get("data"), dict):
+                return result["data"]
+            return result
+        return None
 
     def cancel_order(self, uuid_value: str) -> dict[str, Any] | None:
         """Cancel order via v2 beta endpoint."""
@@ -349,6 +384,93 @@ class BithumbExchange:
             "volume": self._format_number(quantity),
         }
         return self.create_order(payload)
+
+    def execute_market_buy(
+        self,
+        ticker: str,
+        quantity: float,
+        price_krw: float | None = None,
+        order_retry_count: int = 2,
+        order_retry_delay_sec: float = 0.8,
+        order_fill_wait_sec: float = 2.5,
+        order_fill_poll_sec: float = 0.5,
+        cancel_unfilled_before_retry: bool = True,
+    ) -> Any:
+        """Execute market buy with retry/cancel for unfilled orders."""
+        if self._private_client is not None:
+            return self.market_buy(ticker=ticker, quantity=quantity, price_krw=price_krw)
+
+        attempts = max(1, int(order_retry_count))
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                order = self.market_buy(ticker=ticker, quantity=quantity, price_krw=price_krw)
+                uuid_value = self._extract_order_uuid(order)
+                if not uuid_value:
+                    return order
+
+                if self._wait_for_order_done(
+                    uuid_value=uuid_value,
+                    wait_sec=order_fill_wait_sec,
+                    poll_sec=order_fill_poll_sec,
+                ):
+                    return order
+
+                if cancel_unfilled_before_retry:
+                    try:
+                        self.cancel_order(uuid_value)
+                    except Exception as cancel_exc:
+                        LOGGER.warning("Order cancel failed uuid=%s err=%s", uuid_value, cancel_exc)
+                raise RuntimeError(f"Order not filled in time (uuid={uuid_value})")
+            except Exception as exc:
+                last_exc = exc
+                if attempt < attempts:
+                    time.sleep(max(0.0, float(order_retry_delay_sec)))
+
+        raise RuntimeError(f"Market buy failed after retries: {last_exc}")
+
+    def execute_market_sell(
+        self,
+        ticker: str,
+        quantity: float,
+        order_retry_count: int = 2,
+        order_retry_delay_sec: float = 0.8,
+        order_fill_wait_sec: float = 2.5,
+        order_fill_poll_sec: float = 0.5,
+        cancel_unfilled_before_retry: bool = True,
+    ) -> Any:
+        """Execute market sell with retry/cancel for unfilled orders."""
+        if self._private_client is not None:
+            return self.market_sell(ticker=ticker, quantity=quantity)
+
+        attempts = max(1, int(order_retry_count))
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                order = self.market_sell(ticker=ticker, quantity=quantity)
+                uuid_value = self._extract_order_uuid(order)
+                if not uuid_value:
+                    return order
+
+                if self._wait_for_order_done(
+                    uuid_value=uuid_value,
+                    wait_sec=order_fill_wait_sec,
+                    poll_sec=order_fill_poll_sec,
+                ):
+                    return order
+
+                if cancel_unfilled_before_retry:
+                    try:
+                        self.cancel_order(uuid_value)
+                    except Exception as cancel_exc:
+                        LOGGER.warning("Order cancel failed uuid=%s err=%s", uuid_value, cancel_exc)
+                raise RuntimeError(f"Order not filled in time (uuid={uuid_value})")
+            except Exception as exc:
+                last_exc = exc
+                if attempt < attempts:
+                    time.sleep(max(0.0, float(order_retry_delay_sec)))
+
+        raise RuntimeError(f"Market sell failed after retries: {last_exc}")
 
     def get_top_volume_tickers(self, limit: int = 5, quote: str = "KRW") -> list[str]:
         """Return top tickers by 24h quote volume from ticker snapshot."""
@@ -636,6 +758,45 @@ class BithumbExchange:
         if label.startswith("GET "):
             return "public", label.replace("GET ", "", 1).strip()
         return "public", label
+
+    def _wait_for_order_done(
+        self,
+        uuid_value: str,
+        wait_sec: float = 2.5,
+        poll_sec: float = 0.5,
+    ) -> bool:
+        deadline = time.time() + max(0.0, float(wait_sec))
+        while time.time() <= deadline:
+            try:
+                detail = self.get_order(uuid_value)
+            except Exception as exc:
+                LOGGER.warning("Order status fetch failed uuid=%s err=%s", uuid_value, exc)
+                detail = None
+
+            if isinstance(detail, dict) and self._is_order_done(detail):
+                return True
+            time.sleep(max(0.05, float(poll_sec)))
+        return False
+
+    @staticmethod
+    def _extract_order_uuid(order: Any) -> str | None:
+        if not isinstance(order, dict):
+            return None
+        uuid_value = str(order.get("uuid", "")).strip()
+        return uuid_value or None
+
+    @staticmethod
+    def _is_order_done(order: dict[str, Any]) -> bool:
+        state = str(order.get("state") or order.get("status") or "").lower().strip()
+        remaining = BithumbExchange._extract_float(
+            order,
+            ["remaining_volume", "remaining", "unfilled_volume"],
+        )
+        if state in {"cancel", "cancelled", "canceled"}:
+            return False
+        if state in {"done", "completed", "filled"}:
+            return remaining is None or remaining <= 0
+        return bool(remaining is not None and remaining <= 0)
 
     @staticmethod
     def _asset_symbol(ticker: str) -> str:
