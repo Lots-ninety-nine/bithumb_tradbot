@@ -360,10 +360,13 @@ class TradingOrchestrator:
             min_interval_sec=config.notification.min_interval_sec,
         )
 
-    def _notify(self, event: NotifyEvent) -> None:
+    def _notify(self, event: NotifyEvent) -> bool:
         if self.notifier is None:
-            return
-        self.notifier.send(event)
+            return False
+        ok = self.notifier.send(event)
+        if not ok:
+            LOGGER.warning("Notification send failed: title=%s", event.title)
+        return ok
 
     def log_api_usage_summary(self, reset: bool = True) -> None:
         if not self.log_api_usage:
@@ -475,6 +478,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="루프 1회 실행 후 종료",
     )
+    parser.add_argument(
+        "--test-notify",
+        action="store_true",
+        help="디스코드 웹훅 테스트 알림 전송 후 종료",
+    )
     return parser.parse_args()
 
 
@@ -567,6 +575,33 @@ def main() -> None:
 
     if args.validate_data:
         raise SystemExit(run_data_validation(config))
+
+    if args.test_notify:
+        notifier = DiscordNotifier(
+            webhook_url=config.notification.discord_webhook_url,
+            username=config.notification.username,
+            timeout_sec=config.notification.timeout_sec,
+            min_interval_sec=config.notification.min_interval_sec,
+        )
+        sent = notifier.send(
+            NotifyEvent(
+                title="Bot Notification Test",
+                description="수동 테스트 알림입니다.",
+                level="info",
+            )
+        )
+        print(
+            json.dumps(
+                {
+                    "notification_enabled": config.notification.enabled,
+                    "webhook_configured": bool(config.notification.discord_webhook_url.strip()),
+                    "sent": sent,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
 
     orchestrator = TradingOrchestrator(config=config)
     if args.run_once:

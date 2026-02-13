@@ -28,6 +28,9 @@ BITHUMB_API_BASE_URL=https://api.bithumb.com
 # 1회 실행
 /Users/mosiwon/dev/bithumb_tradbot/.venv/bin/python /Users/mosiwon/dev/bithumb_tradbot/main.py --run-once
 
+# 디스코드 알림 테스트
+/Users/mosiwon/dev/bithumb_tradbot/.venv/bin/python /Users/mosiwon/dev/bithumb_tradbot/main.py --test-notify
+
 # 무한 루프 실행
 /Users/mosiwon/dev/bithumb_tradbot/.venv/bin/python /Users/mosiwon/dev/bithumb_tradbot/main.py
 ```

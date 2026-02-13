@@ -83,7 +83,7 @@ class DiscordNotifier:
             self._last_sent_ts = time.time()
             return True
         except Exception as exc:
-            LOGGER.warning("Discord webhook error: %s", exc)
+            LOGGER.warning("Discord webhook error: %s", exc.__class__.__name__)
             return False
 
     @staticmethod
