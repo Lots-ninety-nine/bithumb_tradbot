@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import json
 import logging
 import math
+from pathlib import Path
 import time
 from typing import Any
 
@@ -21,6 +22,8 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("tradbot")
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_CONFIG_PATH = str(PROJECT_ROOT / "config.yaml")
 
 
 class TradingOrchestrator:
@@ -460,8 +463,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bithumb AI Hybrid Agent")
     parser.add_argument(
         "--config",
-        default="config.yaml",
-        help="YAML 설정파일 경로 (default: config.yaml)",
+        default=DEFAULT_CONFIG_PATH,
+        help=f"YAML 설정파일 경로 (default: {DEFAULT_CONFIG_PATH})",
     )
     parser.add_argument(
         "--check-account",

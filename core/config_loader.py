@@ -146,9 +146,16 @@ class BotConfig:
 
 def load_bot_config(config_path: str = "config.yaml") -> BotConfig:
     """Load bot config from yaml file with defaults."""
-    load_dotenv()
+    path = Path(config_path).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    env_path = path.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path, override=False)
+    else:
+        load_dotenv(override=False)
+
     default = BotConfig()
-    path = Path(config_path)
     if not path.exists():
         return default
 
