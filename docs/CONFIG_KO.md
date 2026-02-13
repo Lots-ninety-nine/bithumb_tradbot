@@ -4,6 +4,7 @@
 
 - 설정 파일: `/Users/mosiwon/dev/bithumb_tradbot/config.yaml`
 - API 키 파일: `/Users/mosiwon/dev/bithumb_tradbot/.env`
+- 서버 24시간 운영 가이드: `/Users/mosiwon/dev/bithumb_tradbot/docs/ORACLE_24H_KO.md`
 
 ## 1. 필수 준비
 
