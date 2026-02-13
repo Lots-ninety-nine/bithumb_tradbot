@@ -104,3 +104,27 @@ def evaluate_hard_rule(frame: pd.DataFrame) -> TechnicalSignal:
             "macd_signal": float(last["macd_signal"]) if pd.notna(last["macd_signal"]) else None,
         },
     )
+
+
+def indicator_health(frame: pd.DataFrame) -> dict[str, Any]:
+    """Return readiness/validity summary for major indicators."""
+    df = add_indicators(frame)
+    if df.empty:
+        return {
+            "ready": False,
+            "rows": 0,
+            "non_null_latest": {},
+            "nan_ratio": {},
+        }
+
+    latest = df.iloc[-1]
+    keys = ["rsi14", "ma20", "ma60", "bb_upper", "bb_lower", "macd", "macd_signal"]
+    non_null_latest = {key: bool(pd.notna(latest[key])) for key in keys}
+    nan_ratio = {key: float(df[key].isna().mean()) for key in keys}
+
+    return {
+        "ready": all(non_null_latest.values()),
+        "rows": int(len(df)),
+        "non_null_latest": non_null_latest,
+        "nan_ratio": nan_ratio,
+    }

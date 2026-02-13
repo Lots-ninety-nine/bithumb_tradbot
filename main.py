@@ -163,6 +163,11 @@ def parse_args() -> argparse.Namespace:
         help="Run one trading cycle and exit.",
     )
     parser.add_argument(
+        "--validate-data",
+        action="store_true",
+        help="Run Step 2 data/indicator validation and exit.",
+    )
+    parser.add_argument(
         "--interval",
         type=int,
         default=60,
@@ -176,6 +181,58 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def run_data_validation() -> int:
+    try:
+        from core.strategy import indicator_health
+        from data.collector import MarketDataCollector
+    except ModuleNotFoundError as exc:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": f"Missing dependency: {exc.name}",
+                    "hint": "Install requirements first: pip install -r requirements.txt",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 1
+
+    exchange = BithumbExchange()
+    collector = MarketDataCollector(exchange=exchange, intervals=("minute1", "minute5", "minute15"))
+    watchlist = collector.refresh_watchlist()
+    snapshots = collector.collect_once()
+    quality = collector.get_data_quality_report(min_rows=60)
+
+    indicator_report: dict[str, dict[str, object]] = {}
+    for ticker, snapshot in snapshots.items():
+        frame = snapshot.candles.get("minute15")
+        if frame is None or frame.empty:
+            frame = snapshot.candles.get("minute5")
+        if frame is None or frame.empty:
+            frame = snapshot.candles.get("minute1")
+        if frame is None or frame.empty:
+            indicator_report[ticker] = {"ready": False, "reason": "no_candle_data"}
+            continue
+        indicator_report[ticker] = indicator_health(frame)
+
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "watchlist": watchlist,
+                "quality": quality,
+                "indicator_report": indicator_report,
+            },
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+    )
+    return 0
+
+
 def main() -> None:
     args = parse_args()
 
@@ -184,6 +241,9 @@ def main() -> None:
         report = exchange.connectivity_report(sample_ticker=args.sample_ticker.upper())
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return
+
+    if args.validate_data:
+        raise SystemExit(run_data_validation())
 
     orchestrator = TradingOrchestrator(loop_interval_sec=args.interval, dry_run=not args.live)
     if args.run_once:
