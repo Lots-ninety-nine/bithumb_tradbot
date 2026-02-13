@@ -303,6 +303,20 @@ class TradingOrchestrator:
                         position.slot_id,
                     )
                 else:
+                    if self.config.notification.notify_on_order_attempt:
+                        self._notify(
+                            NotifyEvent(
+                                title="Order Attempt",
+                                description=f"{ticker} {selected_side} 진입 주문 시도",
+                                level="info",
+                                fields=[
+                                    DiscordNotifier.field("ticker", ticker, inline=True),
+                                    DiscordNotifier.field("side", selected_side, inline=True),
+                                    DiscordNotifier.field("qty", f"{quantity:.8f}", inline=True),
+                                    DiscordNotifier.field("price", f"{current_price:.4f}", inline=True),
+                                ],
+                            )
+                        )
                     try:
                         self.exchange.execute_entry(
                             ticker=ticker,
@@ -316,9 +330,37 @@ class TradingOrchestrator:
                             cancel_unfilled_before_retry=self.cancel_unfilled_before_retry,
                         )
                         LOGGER.info("ENTRY executed for %s side=%s", ticker, selected_side)
+                        if self.config.notification.notify_on_order_success:
+                            self._notify(
+                                NotifyEvent(
+                                    title="Order Filled",
+                                    description=f"{ticker} {selected_side} 진입 체결",
+                                    level="success",
+                                    fields=[
+                                        DiscordNotifier.field("ticker", ticker, inline=True),
+                                        DiscordNotifier.field("side", selected_side, inline=True),
+                                        DiscordNotifier.field("qty", f"{quantity:.8f}", inline=True),
+                                        DiscordNotifier.field("price", f"{current_price:.4f}", inline=True),
+                                    ],
+                                )
+                            )
                     except Exception as exc:
                         self.risk.close_position(position.slot_id)
                         LOGGER.warning("ENTRY failed for %s side=%s: %s", ticker, selected_side, exc)
+                        if self.config.notification.notify_on_order_failure:
+                            self._notify(
+                                NotifyEvent(
+                                    title="Order Failed",
+                                    description=f"{ticker} {selected_side} 진입 주문 실패",
+                                    level="error",
+                                    fields=[
+                                        DiscordNotifier.field("ticker", ticker, inline=True),
+                                        DiscordNotifier.field("side", selected_side, inline=True),
+                                        DiscordNotifier.field("qty", f"{quantity:.8f}", inline=True),
+                                        DiscordNotifier.field("error", str(exc)[:900], inline=False),
+                                    ],
+                                )
+                            )
                         continue
 
                 if self.config.notification.notify_on_buy:
@@ -430,6 +472,20 @@ class TradingOrchestrator:
                     slot_id,
                 )
             else:
+                if self.config.notification.notify_on_order_attempt:
+                    self._notify(
+                        NotifyEvent(
+                            title="Order Attempt",
+                            description=f"{position.ticker} {position.side} 청산 주문 시도",
+                            level="info",
+                            fields=[
+                                DiscordNotifier.field("ticker", position.ticker, inline=True),
+                                DiscordNotifier.field("side", position.side, inline=True),
+                                DiscordNotifier.field("qty", f"{position.quantity:.8f}", inline=True),
+                                DiscordNotifier.field("reason", decision.reason, inline=True),
+                            ],
+                        )
+                    )
                 try:
                     self.exchange.execute_exit(
                         ticker=position.ticker,
@@ -447,8 +503,36 @@ class TradingOrchestrator:
                         position.side,
                         decision.reason,
                     )
+                    if self.config.notification.notify_on_order_success:
+                        self._notify(
+                            NotifyEvent(
+                                title="Order Filled",
+                                description=f"{position.ticker} {position.side} 청산 체결",
+                                level="success",
+                                fields=[
+                                    DiscordNotifier.field("ticker", position.ticker, inline=True),
+                                    DiscordNotifier.field("side", position.side, inline=True),
+                                    DiscordNotifier.field("qty", f"{position.quantity:.8f}", inline=True),
+                                    DiscordNotifier.field("reason", decision.reason, inline=True),
+                                ],
+                            )
+                        )
                 except Exception as exc:
                     LOGGER.warning("EXIT failed for %s side=%s: %s", position.ticker, position.side, exc)
+                    if self.config.notification.notify_on_order_failure:
+                        self._notify(
+                            NotifyEvent(
+                                title="Order Failed",
+                                description=f"{position.ticker} {position.side} 청산 주문 실패",
+                                level="error",
+                                fields=[
+                                    DiscordNotifier.field("ticker", position.ticker, inline=True),
+                                    DiscordNotifier.field("side", position.side, inline=True),
+                                    DiscordNotifier.field("qty", f"{position.quantity:.8f}", inline=True),
+                                    DiscordNotifier.field("error", str(exc)[:900], inline=False),
+                                ],
+                            )
+                        )
                     continue
             self.risk.close_position(slot_id)
 

@@ -3,8 +3,8 @@
 # - 퍼센트는 0~1 소수로 입력합니다. 예) 5% = 0.05
 
 app:
-  dry_run: true
-  interval_sec: 60
+  dry_run: false
+  interval_sec: 45
   max_consecutive_errors: 5
   log_level: INFO
   log_api_usage: true
@@ -26,14 +26,14 @@ bybit:
   account_type: UNIFIED
   recv_window: 5000
   position_idx: 0
-  leverage: 2.0
+  leverage: 3.0
   allow_long: true
   allow_short: true
-  short_min_advanced_score: 1.2
+  short_min_advanced_score: 0.8
 
 collector:
-  top_n: 20
-  max_watchlist: 30
+  top_n: 15
+  max_watchlist: 20
   candle_count: 200
   intervals:
     - minute1
@@ -71,16 +71,16 @@ strategy:
 
 llm:
   model_name: gemini-2.5-flash
-  min_buy_confidence: 0.6
-  min_sell_confidence: 0.6
-  max_dead_cat_risk: 0.55
+  min_buy_confidence: 0.55
+  min_sell_confidence: 0.55
+  max_dead_cat_risk: 0.7
   allow_hold_buy: true
-  hold_buy_min_confidence: 0.65
+  hold_buy_min_confidence: 0.6
   hold_buy_max_dead_cat_risk: 0.9
-  hold_buy_min_advanced_score: 1.3
+  hold_buy_min_advanced_score: 0.9
 
 trade:
-  seed_capital: 100.0
+  seed_capital: 52.0
   slot_count: 2
   min_order_notional: 5.0
   max_spread_bps: 35.0
@@ -92,13 +92,13 @@ trade:
   cancel_unfilled_before_retry: true
 
 risk:
-  stop_loss_pct: 0.03
-  trailing_start_pct: 0.01
-  trailing_gap_pct: 0.015
+  stop_loss_pct: 0.025
+  trailing_start_pct: 0.008
+  trailing_gap_pct: 0.012
 
 advanced:
   enabled: true
-  min_total_score: 1.2
+  min_total_score: 0.8
   support_resistance_weight: 0.6
   pattern_weight: 0.5
   orderbook_weight: 0.7
@@ -125,5 +125,8 @@ notification:
   notify_on_error: true
   notify_on_buy: true
   notify_on_sell: true
+  notify_on_order_attempt: true
+  notify_on_order_success: true
+  notify_on_order_failure: true
   notify_on_risk_exit: true
   notify_on_news_refresh: false

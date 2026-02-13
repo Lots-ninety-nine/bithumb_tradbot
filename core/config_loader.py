@@ -153,6 +153,9 @@ class NotificationConfig:
     notify_on_error: bool = True
     notify_on_buy: bool = True
     notify_on_sell: bool = True
+    notify_on_order_attempt: bool = True
+    notify_on_order_success: bool = True
+    notify_on_order_failure: bool = True
     notify_on_risk_exit: bool = True
     notify_on_news_refresh: bool = False
 
