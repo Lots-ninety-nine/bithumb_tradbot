@@ -1,0 +1,106 @@
+"""기술적 지표 계산 및 Hard Rule 신호 평가."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+import pandas as pd
+
+
+@dataclass(slots=True)
+class TechnicalSignal:
+    """Hard rule evaluation result."""
+
+    is_buy_candidate: bool
+    score: int
+    reasons: list[str] = field(default_factory=list)
+    indicators: dict[str, Any] = field(default_factory=dict)
+
+
+def calculate_rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    """Calculate RSI from close price."""
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0.0).ewm(alpha=1 / period, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1 / period, adjust=False).mean()
+    rs = gain / loss.replace(0, pd.NA)
+    return 100 - (100 / (1 + rs))
+
+
+def add_indicators(frame: pd.DataFrame) -> pd.DataFrame:
+    """Append indicators to OHLCV dataframe."""
+    if frame is None or frame.empty:
+        return pd.DataFrame()
+
+    df = frame.copy()
+    df["ma20"] = df["close"].rolling(window=20).mean()
+    df["ma60"] = df["close"].rolling(window=60).mean()
+
+    df["ema12"] = df["close"].ewm(span=12, adjust=False).mean()
+    df["ema26"] = df["close"].ewm(span=26, adjust=False).mean()
+    df["macd"] = df["ema12"] - df["ema26"]
+    df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
+
+    df["bb_mid"] = df["close"].rolling(window=20).mean()
+    std20 = df["close"].rolling(window=20).std()
+    df["bb_upper"] = df["bb_mid"] + 2 * std20
+    df["bb_lower"] = df["bb_mid"] - 2 * std20
+
+    df["rsi14"] = calculate_rsi(df["close"], period=14)
+    return df
+
+
+def evaluate_hard_rule(frame: pd.DataFrame) -> TechnicalSignal:
+    """Evaluate technical buy conditions.
+
+    Buy candidate if at least 2/3 conditions are met:
+    - RSI <= 30
+    - Close touches lower Bollinger band
+    - MACD golden cross
+    """
+    df = add_indicators(frame)
+    if df.empty or len(df) < 35:
+        return TechnicalSignal(
+            is_buy_candidate=False,
+            score=0,
+            reasons=["insufficient_data"],
+        )
+
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    cond_rsi = pd.notna(last["rsi14"]) and float(last["rsi14"]) <= 30.0
+    cond_bb = pd.notna(last["bb_lower"]) and float(last["close"]) <= float(last["bb_lower"])
+    cond_macd = (
+        pd.notna(prev["macd"])
+        and pd.notna(prev["macd_signal"])
+        and pd.notna(last["macd"])
+        and pd.notna(last["macd_signal"])
+        and float(prev["macd"]) <= float(prev["macd_signal"])
+        and float(last["macd"]) > float(last["macd_signal"])
+    )
+
+    reasons: list[str] = []
+    if cond_rsi:
+        reasons.append("rsi_oversold")
+    if cond_bb:
+        reasons.append("bollinger_lower_touch")
+    if cond_macd:
+        reasons.append("macd_golden_cross")
+
+    score = int(cond_rsi) + int(cond_bb) + int(cond_macd)
+    return TechnicalSignal(
+        is_buy_candidate=score >= 2,
+        score=score,
+        reasons=reasons,
+        indicators={
+            "close": float(last["close"]),
+            "rsi14": float(last["rsi14"]) if pd.notna(last["rsi14"]) else None,
+            "ma20": float(last["ma20"]) if pd.notna(last["ma20"]) else None,
+            "ma60": float(last["ma60"]) if pd.notna(last["ma60"]) else None,
+            "bb_upper": float(last["bb_upper"]) if pd.notna(last["bb_upper"]) else None,
+            "bb_lower": float(last["bb_lower"]) if pd.notna(last["bb_lower"]) else None,
+            "macd": float(last["macd"]) if pd.notna(last["macd"]) else None,
+            "macd_signal": float(last["macd_signal"]) if pd.notna(last["macd_signal"]) else None,
+        },
+    )

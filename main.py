@@ -1,0 +1,196 @@
+"""Bithumb AI Hybrid Agent orchestrator."""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict
+from datetime import datetime
+import json
+import logging
+import time
+
+from core.exchange import BithumbExchange
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+LOGGER = logging.getLogger("tradbot")
+
+
+class TradingOrchestrator:
+    """Integrates Data/Intelligence/Risk agents."""
+
+    def __init__(self, loop_interval_sec: int = 60, dry_run: bool = True) -> None:
+        self.loop_interval_sec = loop_interval_sec
+        self.dry_run = dry_run
+
+        from core.llm_analyzer import GeminiAnalyzer
+        from core.risk_manager import RiskManager
+        from core.strategy import evaluate_hard_rule
+        from data.collector import MarketDataCollector
+        from data.rag_store import SimpleRAGStore
+
+        self._evaluate_hard_rule = evaluate_hard_rule
+        self.exchange = BithumbExchange()
+        self.collector = MarketDataCollector(exchange=self.exchange)
+        self.rag_store = SimpleRAGStore()
+        self.analyzer = GeminiAnalyzer(model_name="gemini-1.5-flash")
+        self.risk = RiskManager()
+
+    def run_once(self) -> None:
+        """Single cycle:
+        1) Refresh watchlist / market data
+        2) Hard-rule filter
+        3) LLM check
+        4) Risk checks and execution
+        """
+        if not self.collector.watchlist:
+            watchlist = self.collector.refresh_watchlist()
+            LOGGER.info("Watchlist updated: %s", watchlist)
+
+        snapshots = self.collector.collect_once()
+        if not snapshots:
+            LOGGER.info("No market data collected. Skip this cycle.")
+            return
+
+        for ticker, snapshot in snapshots.items():
+            frame = snapshot.candles.get("minute5")
+            if frame is None or frame.empty:
+                frame = snapshot.candles.get("minute1")
+            if frame is None or frame.empty:
+                continue
+
+            signal = self._evaluate_hard_rule(frame)
+            if not signal.is_buy_candidate:
+                continue
+
+            news_context = self.rag_store.latest_for_ticker(ticker=ticker, limit=3)
+            recent_frame = frame.tail(40).reset_index()
+            if len(recent_frame.columns) > 0:
+                recent_frame = recent_frame.rename(columns={recent_frame.columns[0]: "timestamp"})
+            if "timestamp" in recent_frame.columns:
+                recent_frame["timestamp"] = recent_frame["timestamp"].astype(str)
+            recent_candles = recent_frame.to_dict(orient="records")
+            llm_decision = self.analyzer.analyze(
+                ticker=ticker,
+                technical_payload=asdict(signal),
+                candle_payload=recent_candles,
+                rag_payload=news_context,
+            )
+            LOGGER.info("%s signal=%s llm=%s", ticker, asdict(signal), asdict(llm_decision))
+
+            if llm_decision.decision != "BUY":
+                continue
+            if not self.risk.can_open(ticker):
+                continue
+
+            current_price = float(frame.iloc[-1]["close"])
+            if current_price <= 0:
+                continue
+            quantity = self.risk.slot_budget_krw / current_price
+
+            position = self.risk.open_position(
+                ticker=ticker,
+                quantity=quantity,
+                entry_price=current_price,
+            )
+            if position is None:
+                continue
+
+            if self.dry_run or not self.exchange.trading_enabled:
+                LOGGER.info(
+                    "[DRY-RUN] BUY %s qty=%.8f price=%.2f slot=%s",
+                    ticker,
+                    quantity,
+                    current_price,
+                    position.slot_id,
+                )
+            else:
+                self.exchange.market_buy(ticker=ticker, quantity=quantity)
+                LOGGER.info("BUY executed for %s", ticker)
+
+        self._check_open_positions()
+
+    def _check_open_positions(self) -> None:
+        for slot_id, position in list(self.risk.positions.items()):
+            current_price = self.exchange.get_current_price(position.ticker)
+            if not current_price:
+                continue
+            decision = self.risk.evaluate_exit(position=position, current_price=current_price)
+            if not decision.should_exit:
+                continue
+
+            if self.dry_run or not self.exchange.trading_enabled:
+                LOGGER.info(
+                    "[DRY-RUN] SELL %s qty=%.8f reason=%s slot=%s",
+                    position.ticker,
+                    position.quantity,
+                    decision.reason,
+                    slot_id,
+                )
+            else:
+                self.exchange.market_sell(ticker=position.ticker, quantity=position.quantity)
+                LOGGER.info("SELL executed for %s reason=%s", position.ticker, decision.reason)
+            self.risk.close_position(slot_id)
+
+    def run_forever(self) -> None:
+        LOGGER.info("Trading loop started at %s", datetime.utcnow().isoformat())
+        while True:
+            try:
+                self.run_once()
+            except Exception:
+                LOGGER.exception("Unhandled error in trading loop")
+            time.sleep(self.loop_interval_sec)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Bithumb AI Hybrid Agent")
+    parser.add_argument(
+        "--check-account",
+        action="store_true",
+        help="Run Step 1 account connectivity check and exit.",
+    )
+    parser.add_argument(
+        "--sample-ticker",
+        default="BTC",
+        help="Ticker symbol for account check (default: BTC).",
+    )
+    parser.add_argument(
+        "--run-once",
+        action="store_true",
+        help="Run one trading cycle and exit.",
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=60,
+        help="Loop interval seconds (default: 60).",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Enable real order execution (default: dry-run).",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    if args.check_account:
+        exchange = BithumbExchange()
+        report = exchange.connectivity_report(sample_ticker=args.sample_ticker.upper())
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return
+
+    orchestrator = TradingOrchestrator(loop_interval_sec=args.interval, dry_run=not args.live)
+    if args.run_once:
+        orchestrator.run_once()
+        return
+    orchestrator.run_forever()
+
+
+if __name__ == "__main__":
+    main()
