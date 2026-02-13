@@ -15,7 +15,7 @@ from typing import Any
 from core.config_loader import BotConfig, load_bot_config
 from core.exchange import BithumbExchange
 from core.notifier import DiscordNotifier, NotifyEvent
-from core.performance_tracker import PerformanceTracker
+from core.performance_tracker import PerformanceSnapshot, PerformanceTracker
 
 
 logging.basicConfig(
@@ -325,6 +325,13 @@ class TradingOrchestrator:
             self.risk.close_position(slot_id)
 
             if self.config.notification.notify_on_sell:
+                perf_fields = self._performance_fields()
+                trade_pnl_krw = (current_price - position.entry_price) * position.quantity
+                trade_pnl_pct = (
+                    ((current_price - position.entry_price) / position.entry_price) * 100.0
+                    if position.entry_price > 0
+                    else 0.0
+                )
                 self._notify(
                     NotifyEvent(
                         title="SELL Exit",
@@ -334,14 +341,20 @@ class TradingOrchestrator:
                             DiscordNotifier.field("ticker", position.ticker, inline=True),
                             DiscordNotifier.field("qty", f"{position.quantity:.8f}", inline=True),
                             DiscordNotifier.field("reason", decision.reason, inline=True),
+                            DiscordNotifier.field("entry_price", f"{position.entry_price:.2f}", inline=True),
+                            DiscordNotifier.field("exit_price", f"{current_price:.2f}", inline=True),
+                            DiscordNotifier.field("trade_pnl", f"{trade_pnl_krw:+.0f}KRW ({trade_pnl_pct:+.2f}%)", inline=False),
                             DiscordNotifier.field("dry_run", self.dry_run, inline=True),
+                            *perf_fields,
                         ],
                     )
                 )
 
     def run_forever(self) -> None:
         LOGGER.info("Trading loop started at %s", datetime.now(timezone.utc).isoformat())
+        self.log_performance_summary_if_needed(force=True)
         if not self._started_notified and self.config.notification.notify_on_startup:
+            perf_fields = self._performance_fields()
             self._notify(
                 NotifyEvent(
                     title="Bot Started",
@@ -351,6 +364,7 @@ class TradingOrchestrator:
                         DiscordNotifier.field("dry_run", self.dry_run, inline=True),
                         DiscordNotifier.field("interval_sec", self.loop_interval_sec, inline=True),
                         DiscordNotifier.field("slot_count", self.config.trade.slot_count, inline=True),
+                        *perf_fields,
                     ],
                 )
             )
@@ -510,10 +524,9 @@ class TradingOrchestrator:
             return
         self._next_performance_log_at = now_ts + self.performance_log_interval_sec
 
-        total_krw = self.exchange.get_total_asset_krw()
-        if total_krw is None or total_krw <= 0:
+        snapshot = self._get_performance_snapshot()
+        if snapshot is None:
             return
-        snapshot = self.performance_tracker.snapshot(current_krw=total_krw)
         LOGGER.info(
             "Performance since %s | baseline=%.0fKRW current=%.0fKRW pnl=%.0fKRW (%.2f%%)",
             snapshot.started_at.isoformat(),
@@ -522,6 +535,23 @@ class TradingOrchestrator:
             snapshot.pnl_krw,
             snapshot.pnl_pct,
         )
+
+    def _get_performance_snapshot(self) -> PerformanceSnapshot | None:
+        total_krw = self.exchange.get_total_asset_krw()
+        if total_krw is None or total_krw <= 0:
+            return None
+        return self.performance_tracker.snapshot(current_krw=total_krw)
+
+    def _performance_fields(self) -> list[dict[str, object]]:
+        snapshot = self._get_performance_snapshot()
+        if snapshot is None:
+            return []
+        return [
+            DiscordNotifier.field("start_at", snapshot.started_at.isoformat(), inline=False),
+            DiscordNotifier.field("start_asset", f"{snapshot.baseline_krw:.0f}KRW", inline=True),
+            DiscordNotifier.field("current_asset", f"{snapshot.current_krw:.0f}KRW", inline=True),
+            DiscordNotifier.field("total_pnl", f"{snapshot.pnl_krw:+.0f}KRW ({snapshot.pnl_pct:+.2f}%)", inline=False),
+        ]
 
     def _pick_frame(self, candles: dict[str, Any]):
         for interval in self.frame_priority:

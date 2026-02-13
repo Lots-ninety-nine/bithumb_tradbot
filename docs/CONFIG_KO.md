@@ -99,6 +99,7 @@ BITHUMB_API_BASE_URL=https://api.bithumb.com
 - `notification.notify_on_error`: 예외 알림
 - `notification.notify_on_buy`: 매수 알림
 - `notification.notify_on_sell`: 매도 알림
+- 시작/매도 알림에는 시작 자산, 현재 총자산, 누적 손익(%)이 함께 포함됩니다.
 
 ### 감시 종목(코인 수 조절)
 - `collector.top_n`: 거래량 상위 종목 개수
