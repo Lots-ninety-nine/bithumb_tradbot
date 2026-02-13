@@ -35,7 +35,12 @@ class LLMDecision:
 class GeminiAnalyzer:
     """Gemini based market context analyzer."""
 
-    def __init__(self, model_name: str = "gemini-2.5-flash", min_buy_confidence: float = 0.7) -> None:
+    def __init__(
+        self,
+        model_name: str = "gemini-2.5-flash",
+        min_buy_confidence: float = 0.7,
+        min_sell_confidence: float = 0.7,
+    ) -> None:
         env_path = Path(__file__).resolve().parents[1] / ".env"
         if env_path.exists():
             load_dotenv(dotenv_path=env_path)
@@ -43,6 +48,7 @@ class GeminiAnalyzer:
             load_dotenv()
         self.model_name = model_name
         self.min_buy_confidence = min_buy_confidence
+        self.min_sell_confidence = min_sell_confidence
         self._client = None
 
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -183,3 +189,8 @@ class GeminiAnalyzer:
         ):
             return False
         return True
+
+    def allow_sell(self, decision: LLMDecision) -> bool:
+        if decision.decision != "SELL":
+            return False
+        return decision.confidence >= self.min_sell_confidence

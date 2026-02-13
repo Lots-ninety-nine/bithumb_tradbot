@@ -14,7 +14,6 @@ import xml.etree.ElementTree as ET
 import requests
 
 from core.config_loader import NewsConfig
-from core.exchange import BithumbExchange
 from data.rag_store import NewsItem, SimpleRAGStore
 
 
@@ -26,7 +25,7 @@ class MarketNewsCollector:
 
     def __init__(
         self,
-        exchange: BithumbExchange,
+        exchange: Any,
         rag_store: SimpleRAGStore,
         config: NewsConfig,
     ) -> None:
@@ -196,7 +195,12 @@ class MarketNewsCollector:
     @staticmethod
     def _asset_symbol(code: str) -> str:
         value = code.upper().strip()
-        return value.split("-")[-1] if "-" in value else value
+        if "-" in value:
+            return value.split("-")[-1]
+        for quote in ("USDT", "USDC", "KRW", "BTC", "ETH"):
+            if value.endswith(quote) and len(value) > len(quote):
+                return value[: -len(quote)]
+        return value
 
     def _infer_tickers(self, title: str, summary: str, symbols: list[str]) -> list[str]:
         text = f"{title} {summary}".upper()

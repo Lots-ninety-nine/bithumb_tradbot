@@ -12,7 +12,9 @@ class Position:
     ticker: str
     quantity: float
     entry_price: float
+    side: str
     highest_price: float
+    lowest_price: float
     opened_at: datetime
 
 
@@ -53,17 +55,28 @@ class RiskManager:
             return False
         return bool(self.available_slots())
 
-    def open_position(self, ticker: str, quantity: float, entry_price: float) -> Position | None:
+    def open_position(
+        self,
+        ticker: str,
+        quantity: float,
+        entry_price: float,
+        side: str = "LONG",
+    ) -> Position | None:
         free = self.available_slots()
         if not free:
             return None
         slot_id = free[0]
+        side_norm = side.upper().strip()
+        if side_norm not in {"LONG", "SHORT"}:
+            side_norm = "LONG"
         position = Position(
             slot_id=slot_id,
             ticker=ticker,
             quantity=quantity,
             entry_price=entry_price,
+            side=side_norm,
             highest_price=entry_price,
+            lowest_price=entry_price,
             opened_at=datetime.now(timezone.utc),
         )
         self.positions[slot_id] = position
@@ -77,6 +90,30 @@ class RiskManager:
         if current_price <= 0:
             return ExitDecision(should_exit=False, reason="invalid_price")
 
+        if position.side == "SHORT":
+            if current_price < position.lowest_price:
+                position.lowest_price = current_price
+
+            pnl_pct = (position.entry_price - current_price) / position.entry_price
+            if pnl_pct <= -self.stop_loss_pct:
+                return ExitDecision(should_exit=True, reason="stop_loss")
+
+            trailing_armed = position.lowest_price <= position.entry_price * (1 - self.trailing_start_pct)
+            if trailing_armed:
+                trailing_stop = position.lowest_price * (1 + self.trailing_gap_pct)
+                if current_price >= trailing_stop:
+                    return ExitDecision(
+                        should_exit=True,
+                        reason="trailing_stop",
+                        trailing_stop_price=trailing_stop,
+                    )
+                return ExitDecision(
+                    should_exit=False,
+                    reason="trailing_active",
+                    trailing_stop_price=trailing_stop,
+                )
+            return ExitDecision(should_exit=False, reason="hold")
+
         if current_price > position.highest_price:
             position.highest_price = current_price
 
@@ -84,7 +121,8 @@ class RiskManager:
         if pnl_pct <= -self.stop_loss_pct:
             return ExitDecision(should_exit=True, reason="stop_loss")
 
-        if pnl_pct >= self.trailing_start_pct:
+        trailing_armed = position.highest_price >= position.entry_price * (1 + self.trailing_start_pct)
+        if trailing_armed:
             trailing_stop = position.highest_price * (1 - self.trailing_gap_pct)
             if current_price <= trailing_stop:
                 return ExitDecision(

@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from core.config_loader import BotConfig, load_bot_config
+from core.bybit_exchange import BybitExchange
 from core.exchange import BithumbExchange
 from core.notifier import DiscordNotifier, NotifyEvent
 from core.performance_tracker import PerformanceSnapshot, PerformanceTracker
@@ -32,6 +33,7 @@ class TradingOrchestrator:
 
     def __init__(self, config: BotConfig) -> None:
         self.config = config
+        self.provider = resolve_exchange_provider(config)
         self.loop_interval_sec = int(config.app.interval_sec)
         self.dry_run = bool(config.app.dry_run)
         self.max_consecutive_errors = int(config.app.max_consecutive_errors)
@@ -48,6 +50,9 @@ class TradingOrchestrator:
         self.hold_buy_min_confidence = float(config.llm.hold_buy_min_confidence)
         self.hold_buy_max_dead_cat_risk = float(config.llm.hold_buy_max_dead_cat_risk)
         self.hold_buy_min_advanced_score = float(config.llm.hold_buy_min_advanced_score)
+        self.allow_long = True
+        self.allow_short = False
+        self.short_min_advanced_score = float(config.bybit.short_min_advanced_score)
         self.frame_priority = tuple(config.strategy.interval_priority)
         self.log_api_usage = bool(config.app.log_api_usage)
         self.log_performance = bool(config.app.log_performance)
@@ -58,29 +63,31 @@ class TradingOrchestrator:
         from core.llm_analyzer import GeminiAnalyzer
         from core.risk_manager import RiskManager
         from core.advanced_signals import evaluate_advanced_signals
-        from core.strategy import HardRuleConfig, evaluate_hard_rule
+        from core.strategy import HardRuleConfig, TechnicalSignal, evaluate_hard_rule, evaluate_hard_rule_short
         from data.collector import MarketDataCollector
         from data.news_collector import MarketNewsCollector
         from data.rag_store import SimpleRAGStore
 
+        self._technical_signal_cls = TechnicalSignal
         self._evaluate_hard_rule = evaluate_hard_rule
+        self._evaluate_hard_rule_short = evaluate_hard_rule_short
         self._evaluate_advanced_signals = evaluate_advanced_signals
         self._rule_config = HardRuleConfig(
             min_data_rows=int(config.strategy.min_data_rows),
             required_signal_count=int(config.strategy.required_signal_count),
             rsi_buy_threshold=float(config.strategy.rsi_buy_threshold),
+            rsi_sell_threshold=float(config.strategy.rsi_sell_threshold),
             bollinger_touch_tolerance_pct=float(config.strategy.bollinger_touch_tolerance_pct),
             use_macd_golden_cross=bool(config.strategy.use_macd_golden_cross),
+            use_macd_dead_cross=bool(config.strategy.use_macd_dead_cross),
         )
         self._advanced_config = config.advanced
 
-        self.exchange = BithumbExchange(
-            quote_currency=config.exchange.quote_currency,
-            public_retry_count=config.exchange.public_retry_count,
-            public_retry_delay_sec=config.exchange.public_retry_delay_sec,
-            timeout_sec=config.exchange.timeout_sec,
-            enable_official_orders=config.app.enable_official_orders,
-        )
+        self.exchange = build_exchange(config)
+        self.asset_unit = str(getattr(self.exchange, "quote_currency", config.exchange.quote_currency)).upper()
+        if self.provider == "bybit":
+            self.allow_long = bool(config.bybit.allow_long)
+            self.allow_short = bool(config.bybit.allow_short) and bool(getattr(self.exchange, "supports_short", False))
         self.collector = MarketDataCollector(
             exchange=self.exchange,
             intervals=tuple(config.collector.intervals),
@@ -100,6 +107,7 @@ class TradingOrchestrator:
         self.analyzer = GeminiAnalyzer(
             model_name=config.llm.model_name,
             min_buy_confidence=config.llm.min_buy_confidence,
+            min_sell_confidence=config.llm.min_sell_confidence,
         )
         self.risk = RiskManager(
             seed_krw=config.trade.seed_krw,
@@ -130,8 +138,13 @@ class TradingOrchestrator:
                 if frame is None or frame.empty:
                     continue
 
-                signal = self._evaluate_hard_rule(frame, config=self._rule_config)
-                if not signal.is_buy_candidate:
+                long_signal = self._evaluate_hard_rule(frame, config=self._rule_config) if self.allow_long else self._technical_signal_cls(False, 0, ["long_disabled"], {})
+                short_signal = (
+                    self._evaluate_hard_rule_short(frame, config=self._rule_config)
+                    if self.allow_short
+                    else self._technical_signal_cls(False, 0, ["short_disabled"], {})
+                )
+                if not long_signal.is_buy_candidate and not short_signal.is_buy_candidate:
                     continue
 
                 advanced = self._evaluate_advanced_signals(
@@ -139,14 +152,39 @@ class TradingOrchestrator:
                     orderbook=snapshot.orderbook,
                     config=self._advanced_config,
                 )
-                if self._advanced_config.enabled and not advanced.buy_bias:
-                    LOGGER.info(
-                        "%s advanced gate blocked score=%.3f reasons=%s",
-                        ticker,
-                        advanced.total_score,
-                        advanced.reasons,
+                candidate_sides: list[tuple[str, Any]] = []
+                if long_signal.is_buy_candidate:
+                    long_allowed = (not self._advanced_config.enabled) or advanced.buy_bias
+                    if long_allowed:
+                        candidate_sides.append(("LONG", long_signal))
+                    else:
+                        LOGGER.info(
+                            "%s LONG advanced gate blocked score=%.3f reasons=%s",
+                            ticker,
+                            advanced.total_score,
+                            advanced.reasons,
+                        )
+                if short_signal.is_buy_candidate:
+                    short_allowed = (not self._advanced_config.enabled) or (
+                        advanced.total_score <= -self.short_min_advanced_score
                     )
+                    if short_allowed:
+                        candidate_sides.append(("SHORT", short_signal))
+                    else:
+                        LOGGER.info(
+                            "%s SHORT advanced gate blocked score=%.3f reasons=%s",
+                            ticker,
+                            advanced.total_score,
+                            advanced.reasons,
+                        )
+
+                if not candidate_sides:
                     continue
+
+                selected_side, signal = self._select_trade_side(
+                    candidate_sides=candidate_sides,
+                    advanced_score=advanced.total_score,
+                )
 
                 asset_symbol = ticker.split("-")[-1] if "-" in ticker else ticker
                 news_context = self.rag_store.query_for_trade(ticker=asset_symbol, limit=3)
@@ -160,46 +198,55 @@ class TradingOrchestrator:
                 llm_decision = self.analyzer.analyze(
                     ticker=ticker,
                     technical_payload={
+                        "intended_side": selected_side,
                         "hard_rule": asdict(signal),
+                        "hard_rule_long": asdict(long_signal),
+                        "hard_rule_short": asdict(short_signal),
                         "advanced": advanced.to_dict(),
                     },
                     candle_payload=recent_candles,
                     rag_payload=news_context,
                 )
                 LOGGER.info(
-                    "%s hard=%s advanced=%s llm=%s",
+                    "%s side=%s hard=%s advanced=%s llm=%s",
                     ticker,
+                    selected_side,
                     asdict(signal),
                     advanced.to_dict(),
                     asdict(llm_decision),
                 )
 
-                allow_buy = self.analyzer.allow_buy(
-                    llm_decision,
-                    max_dead_cat_risk=self.max_dead_cat_risk,
-                )
-                if (
-                    not allow_buy
-                    and self._allow_hold_buy_override(
-                        decision=llm_decision,
-                        advanced_score=advanced.total_score,
+                allow_entry = False
+                if selected_side == "LONG":
+                    allow_entry = self.analyzer.allow_buy(
+                        llm_decision,
+                        max_dead_cat_risk=self.max_dead_cat_risk,
                     )
-                ):
-                    allow_buy = True
-                    LOGGER.info(
-                        "%s HOLD override accepted: conf=%.2f dead_cat=%.2f adv=%.3f",
-                        ticker,
-                        llm_decision.confidence,
-                        llm_decision.dead_cat_bounce_risk
-                        if llm_decision.dead_cat_bounce_risk is not None
-                        else -1.0,
-                        advanced.total_score,
-                    )
+                    if (
+                        not allow_entry
+                        and self._allow_hold_buy_override(
+                            decision=llm_decision,
+                            advanced_score=advanced.total_score,
+                        )
+                    ):
+                        allow_entry = True
+                        LOGGER.info(
+                            "%s LONG HOLD override accepted: conf=%.2f dead_cat=%.2f adv=%.3f",
+                            ticker,
+                            llm_decision.confidence,
+                            llm_decision.dead_cat_bounce_risk
+                            if llm_decision.dead_cat_bounce_risk is not None
+                            else -1.0,
+                            advanced.total_score,
+                        )
+                else:
+                    allow_entry = self.analyzer.allow_sell(llm_decision)
 
-                if not allow_buy:
+                if not allow_entry:
                     LOGGER.info(
-                        "%s LLM buy gate blocked decision=%s confidence=%.2f dead_cat=%.2f",
+                        "%s %s LLM gate blocked decision=%s confidence=%.2f dead_cat=%.2f",
                         ticker,
+                        selected_side,
                         llm_decision.decision,
                         llm_decision.confidence,
                         llm_decision.dead_cat_bounce_risk
@@ -240,44 +287,48 @@ class TradingOrchestrator:
                     ticker=ticker,
                     quantity=quantity,
                     entry_price=current_price,
+                    side=selected_side,
                 )
                 if position is None:
                     continue
 
                 if self.dry_run or not self.exchange.trading_enabled:
                     LOGGER.info(
-                        "[DRY-RUN] BUY %s qty=%.8f price=%.2f slot=%s",
+                        "[DRY-RUN] ENTRY %s side=%s qty=%.8f price=%.2f slot=%s",
                         ticker,
+                        selected_side,
                         quantity,
                         current_price,
                         position.slot_id,
                     )
                 else:
                     try:
-                        self.exchange.execute_market_buy(
+                        self.exchange.execute_entry(
                             ticker=ticker,
+                            side=selected_side,
                             quantity=quantity,
-                            price_krw=slot_budget_krw,
+                            notional=slot_budget_krw,
                             order_retry_count=self.order_retry_count,
                             order_retry_delay_sec=self.order_retry_delay_sec,
                             order_fill_wait_sec=self.order_fill_wait_sec,
                             order_fill_poll_sec=self.order_fill_poll_sec,
                             cancel_unfilled_before_retry=self.cancel_unfilled_before_retry,
                         )
-                        LOGGER.info("BUY executed for %s", ticker)
+                        LOGGER.info("ENTRY executed for %s side=%s", ticker, selected_side)
                     except Exception as exc:
                         self.risk.close_position(position.slot_id)
-                        LOGGER.warning("BUY failed for %s: %s", ticker, exc)
+                        LOGGER.warning("ENTRY failed for %s side=%s: %s", ticker, selected_side, exc)
                         continue
 
                 if self.config.notification.notify_on_buy:
                     self._notify(
                         NotifyEvent(
-                            title="BUY Signal",
-                            description=f"{ticker} 진입 처리",
+                            title="ENTRY Signal",
+                            description=f"{ticker} {selected_side} 진입 처리",
                             level="success",
                             fields=[
                                 DiscordNotifier.field("ticker", ticker, inline=True),
+                                DiscordNotifier.field("side", selected_side, inline=True),
                                 DiscordNotifier.field("qty", f"{quantity:.8f}", inline=True),
                                 DiscordNotifier.field("price", f"{current_price:.2f}", inline=True),
                                 DiscordNotifier.field("dry_run", self.dry_run, inline=True),
@@ -301,16 +352,18 @@ class TradingOrchestrator:
 
             if self.dry_run or not self.exchange.trading_enabled:
                 LOGGER.info(
-                    "[DRY-RUN] SELL %s qty=%.8f reason=%s slot=%s",
+                    "[DRY-RUN] EXIT %s side=%s qty=%.8f reason=%s slot=%s",
                     position.ticker,
+                    position.side,
                     position.quantity,
                     decision.reason,
                     slot_id,
                 )
             else:
                 try:
-                    self.exchange.execute_market_sell(
+                    self.exchange.execute_exit(
                         ticker=position.ticker,
+                        side=position.side,
                         quantity=position.quantity,
                         order_retry_count=self.order_retry_count,
                         order_retry_delay_sec=self.order_retry_delay_sec,
@@ -318,32 +371,45 @@ class TradingOrchestrator:
                         order_fill_poll_sec=self.order_fill_poll_sec,
                         cancel_unfilled_before_retry=self.cancel_unfilled_before_retry,
                     )
-                    LOGGER.info("SELL executed for %s reason=%s", position.ticker, decision.reason)
+                    LOGGER.info(
+                        "EXIT executed for %s side=%s reason=%s",
+                        position.ticker,
+                        position.side,
+                        decision.reason,
+                    )
                 except Exception as exc:
-                    LOGGER.warning("SELL failed for %s: %s", position.ticker, exc)
+                    LOGGER.warning("EXIT failed for %s side=%s: %s", position.ticker, position.side, exc)
                     continue
             self.risk.close_position(slot_id)
 
             if self.config.notification.notify_on_sell:
                 perf_fields = self._performance_fields()
-                trade_pnl_krw = (current_price - position.entry_price) * position.quantity
+                if position.side == "SHORT":
+                    trade_pnl_krw = (position.entry_price - current_price) * position.quantity
+                else:
+                    trade_pnl_krw = (current_price - position.entry_price) * position.quantity
                 trade_pnl_pct = (
-                    ((current_price - position.entry_price) / position.entry_price) * 100.0
+                    (trade_pnl_krw / (position.entry_price * position.quantity)) * 100.0
                     if position.entry_price > 0
                     else 0.0
                 )
                 self._notify(
                     NotifyEvent(
                         title="SELL Exit",
-                        description=f"{position.ticker} 청산 처리",
+                        description=f"{position.ticker} {position.side} 청산 처리",
                         level="warn" if decision.reason == "stop_loss" else "info",
                         fields=[
                             DiscordNotifier.field("ticker", position.ticker, inline=True),
+                            DiscordNotifier.field("side", position.side, inline=True),
                             DiscordNotifier.field("qty", f"{position.quantity:.8f}", inline=True),
                             DiscordNotifier.field("reason", decision.reason, inline=True),
                             DiscordNotifier.field("entry_price", f"{position.entry_price:.2f}", inline=True),
                             DiscordNotifier.field("exit_price", f"{current_price:.2f}", inline=True),
-                            DiscordNotifier.field("trade_pnl", f"{trade_pnl_krw:+.0f}KRW ({trade_pnl_pct:+.2f}%)", inline=False),
+                            DiscordNotifier.field(
+                                "trade_pnl",
+                                f"{trade_pnl_krw:+.4f}{self.asset_unit} ({trade_pnl_pct:+.2f}%)",
+                                inline=False,
+                            ),
                             DiscordNotifier.field("dry_run", self.dry_run, inline=True),
                             *perf_fields,
                         ],
@@ -361,6 +427,7 @@ class TradingOrchestrator:
                     description="트레이딩 루프가 시작되었습니다.",
                     level="info",
                     fields=[
+                        DiscordNotifier.field("provider", self.provider, inline=True),
                         DiscordNotifier.field("dry_run", self.dry_run, inline=True),
                         DiscordNotifier.field("interval_sec", self.loop_interval_sec, inline=True),
                         DiscordNotifier.field("slot_count", self.config.trade.slot_count, inline=True),
@@ -470,6 +537,29 @@ class TradingOrchestrator:
             return False
         return True
 
+    @staticmethod
+    def _select_trade_side(
+        candidate_sides: list[tuple[str, Any]],
+        advanced_score: float,
+    ) -> tuple[str, Any]:
+        if len(candidate_sides) == 1:
+            return candidate_sides[0]
+
+        by_side = {side: signal for side, signal in candidate_sides}
+        if "LONG" in by_side and "SHORT" in by_side:
+            if advanced_score > 0:
+                return "LONG", by_side["LONG"]
+            if advanced_score < 0:
+                return "SHORT", by_side["SHORT"]
+
+            long_score = int(getattr(by_side["LONG"], "score", 0))
+            short_score = int(getattr(by_side["SHORT"], "score", 0))
+            if short_score > long_score:
+                return "SHORT", by_side["SHORT"]
+            return "LONG", by_side["LONG"]
+
+        return candidate_sides[0]
+
     def _resolve_slot_budget_krw(self) -> float:
         fallback = self.risk.slot_budget_krw
         if not self.use_available_krw_as_seed:
@@ -528,11 +618,14 @@ class TradingOrchestrator:
         if snapshot is None:
             return
         LOGGER.info(
-            "Performance since %s | baseline=%.0fKRW current=%.0fKRW pnl=%.0fKRW (%.2f%%)",
+            "Performance since %s | baseline=%.4f%s current=%.4f%s pnl=%.4f%s (%.2f%%)",
             snapshot.started_at.isoformat(),
             snapshot.baseline_krw,
+            self.asset_unit,
             snapshot.current_krw,
+            self.asset_unit,
             snapshot.pnl_krw,
+            self.asset_unit,
             snapshot.pnl_pct,
         )
 
@@ -548,9 +641,13 @@ class TradingOrchestrator:
             return []
         return [
             DiscordNotifier.field("start_at", snapshot.started_at.isoformat(), inline=False),
-            DiscordNotifier.field("start_asset", f"{snapshot.baseline_krw:.0f}KRW", inline=True),
-            DiscordNotifier.field("current_asset", f"{snapshot.current_krw:.0f}KRW", inline=True),
-            DiscordNotifier.field("total_pnl", f"{snapshot.pnl_krw:+.0f}KRW ({snapshot.pnl_pct:+.2f}%)", inline=False),
+            DiscordNotifier.field("start_asset", f"{snapshot.baseline_krw:.4f}{self.asset_unit}", inline=True),
+            DiscordNotifier.field("current_asset", f"{snapshot.current_krw:.4f}{self.asset_unit}", inline=True),
+            DiscordNotifier.field(
+                "total_pnl",
+                f"{snapshot.pnl_krw:+.4f}{self.asset_unit} ({snapshot.pnl_pct:+.2f}%)",
+                inline=False,
+            ),
         ]
 
     def _pick_frame(self, candles: dict[str, Any]):
@@ -610,7 +707,7 @@ class TradingOrchestrator:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Bithumb AI Hybrid Agent")
+    parser = argparse.ArgumentParser(description="Crypto AI Hybrid Agent")
     parser.add_argument(
         "--config",
         default=DEFAULT_CONFIG_PATH,
@@ -644,6 +741,37 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_exchange_provider(config: BotConfig) -> str:
+    provider = str(config.exchange.provider).strip().lower()
+    if provider == "bybit" or bool(config.bybit.enabled):
+        return "bybit"
+    return "bithumb"
+
+
+def build_exchange(config: BotConfig):
+    provider = resolve_exchange_provider(config)
+    if provider == "bybit":
+        return BybitExchange(
+            base_url=config.bybit.base_url,
+            category=config.bybit.category,
+            quote_coin=config.bybit.quote_coin,
+            account_type=config.bybit.account_type,
+            recv_window=config.bybit.recv_window,
+            leverage=config.bybit.leverage,
+            public_retry_count=config.exchange.public_retry_count,
+            public_retry_delay_sec=config.exchange.public_retry_delay_sec,
+            timeout_sec=config.exchange.timeout_sec,
+            enable_trading=not config.app.dry_run,
+        )
+    return BithumbExchange(
+        quote_currency=config.exchange.quote_currency,
+        public_retry_count=config.exchange.public_retry_count,
+        public_retry_delay_sec=config.exchange.public_retry_delay_sec,
+        timeout_sec=config.exchange.timeout_sec,
+        enable_official_orders=config.app.enable_official_orders,
+    )
+
+
 def run_data_validation(config: BotConfig) -> int:
     try:
         from core.strategy import indicator_health
@@ -662,13 +790,7 @@ def run_data_validation(config: BotConfig) -> int:
         )
         return 1
 
-    exchange = BithumbExchange(
-        quote_currency=config.exchange.quote_currency,
-        public_retry_count=config.exchange.public_retry_count,
-        public_retry_delay_sec=config.exchange.public_retry_delay_sec,
-        timeout_sec=config.exchange.timeout_sec,
-        enable_official_orders=config.app.enable_official_orders,
-    )
+    exchange = build_exchange(config)
     collector = MarketDataCollector(
         exchange=exchange,
         intervals=tuple(config.collector.intervals),
@@ -720,19 +842,14 @@ def main() -> None:
     logging.getLogger().setLevel(getattr(logging, level_name, logging.INFO))
 
     if args.check_account:
-        exchange = BithumbExchange(
-            quote_currency=config.exchange.quote_currency,
-            public_retry_count=config.exchange.public_retry_count,
-            public_retry_delay_sec=config.exchange.public_retry_delay_sec,
-            timeout_sec=config.exchange.timeout_sec,
-            enable_official_orders=config.app.enable_official_orders,
-        )
+        exchange = build_exchange(config)
         report = exchange.connectivity_report(sample_ticker=config.exchange.sample_ticker)
         tracker = PerformanceTracker(baseline_path=config.app.performance_baseline_path)
         total_krw = exchange.get_total_asset_krw()
         if total_krw is not None and total_krw > 0:
             perf = tracker.snapshot(current_krw=total_krw)
             report["performance"] = {
+                "asset_unit": str(getattr(exchange, "quote_currency", config.exchange.quote_currency)).upper(),
                 "started_at": perf.started_at.isoformat(),
                 "baseline_krw": perf.baseline_krw,
                 "current_krw": perf.current_krw,

@@ -6,8 +6,6 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from core.exchange import BithumbExchange
-
 
 @dataclass(slots=True)
 class TickerSnapshot:
@@ -37,7 +35,7 @@ class MarketDataCollector:
 
     def __init__(
         self,
-        exchange: BithumbExchange,
+        exchange: Any,
         intervals: tuple[str, ...] = ("minute1", "minute5", "minute15"),
         top_n: int = 15,
         max_watchlist: int = 25,

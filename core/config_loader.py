@@ -26,11 +26,26 @@ class AppConfig:
 
 @dataclass(slots=True)
 class ExchangeConfig:
+    provider: str = "bithumb"
     sample_ticker: str = "KRW-BTC"
     quote_currency: str = "KRW"
     public_retry_count: int = 2
     public_retry_delay_sec: float = 0.2
     timeout_sec: float = 8.0
+
+
+@dataclass(slots=True)
+class BybitConfig:
+    enabled: bool = False
+    base_url: str = "https://api.bybit.com"
+    category: str = "linear"
+    quote_coin: str = "USDT"
+    account_type: str = "UNIFIED"
+    recv_window: int = 5000
+    leverage: float = 2.0
+    allow_long: bool = True
+    allow_short: bool = True
+    short_min_advanced_score: float = 1.2
 
 
 @dataclass(slots=True)
@@ -66,14 +81,17 @@ class StrategyConfig:
     min_data_rows: int = 35
     required_signal_count: int = 2
     rsi_buy_threshold: float = 30.0
+    rsi_sell_threshold: float = 70.0
     bollinger_touch_tolerance_pct: float = 0.0
     use_macd_golden_cross: bool = True
+    use_macd_dead_cross: bool = True
 
 
 @dataclass(slots=True)
 class LLMConfig:
     model_name: str = "gemini-2.5-flash"
     min_buy_confidence: float = 0.7
+    min_sell_confidence: float = 0.7
     max_dead_cat_risk: float = 0.55
     allow_hold_buy: bool = True
     hold_buy_min_confidence: float = 0.65
@@ -144,6 +162,7 @@ class NotificationConfig:
 class BotConfig:
     app: AppConfig = field(default_factory=AppConfig)
     exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
+    bybit: BybitConfig = field(default_factory=BybitConfig)
     collector: CollectorConfig = field(default_factory=CollectorConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -178,6 +197,7 @@ def load_bot_config(config_path: str = "config.yaml") -> BotConfig:
     return BotConfig(
         app=AppConfig(**_only_known_keys(AppConfig, merged["app"])),
         exchange=ExchangeConfig(**_only_known_keys(ExchangeConfig, merged["exchange"])),
+        bybit=BybitConfig(**_only_known_keys(BybitConfig, merged.get("bybit", {}))),
         collector=CollectorConfig(**_only_known_keys(CollectorConfig, merged["collector"])),
         strategy=StrategyConfig(**_only_known_keys(StrategyConfig, merged["strategy"])),
         llm=LLMConfig(**_only_known_keys(LLMConfig, merged["llm"])),

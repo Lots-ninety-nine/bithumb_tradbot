@@ -15,8 +15,14 @@ class ConfigLoaderTest(unittest.TestCase):
             cfg_path.write_text(
                 "\n".join(
                     [
+                        "exchange:",
+                        "  provider: bybit",
                         "app:",
                         "  interval_sec: 30",
+                        "bybit:",
+                        "  enabled: true",
+                        "  allow_short: true",
+                        "  leverage: 3.0",
                         "news:",
                         "  enabled: true",
                         "  refresh_interval_sec: 120",
@@ -31,6 +37,10 @@ class ConfigLoaderTest(unittest.TestCase):
             cfg = load_bot_config(str(cfg_path))
 
             self.assertEqual(cfg.app.interval_sec, 30)
+            self.assertEqual(cfg.exchange.provider, "bybit")
+            self.assertTrue(cfg.bybit.enabled)
+            self.assertTrue(cfg.bybit.allow_short)
+            self.assertEqual(cfg.bybit.leverage, 3.0)
             self.assertTrue(cfg.news.enabled)
             self.assertEqual(cfg.news.refresh_interval_sec, 120)
             self.assertTrue(cfg.notification.enabled)

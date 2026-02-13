@@ -150,6 +150,10 @@ class BithumbExchange:
             return True
         return self.private_api_enabled and self.enable_official_orders
 
+    @property
+    def supports_short(self) -> bool:
+        return False
+
     def connectivity_report(self, sample_ticker: str = "BTC") -> dict[str, Any]:
         """Return public/private API connectivity summary."""
         report: dict[str, Any] = {
@@ -506,6 +510,54 @@ class BithumbExchange:
                     time.sleep(max(0.0, float(order_retry_delay_sec)))
 
         raise RuntimeError(f"Market sell failed after retries: {last_exc}")
+
+    def execute_entry(
+        self,
+        ticker: str,
+        side: str,
+        quantity: float,
+        notional: float | None = None,
+        order_retry_count: int = 2,
+        order_retry_delay_sec: float = 0.8,
+        order_fill_wait_sec: float = 2.5,
+        order_fill_poll_sec: float = 0.5,
+        cancel_unfilled_before_retry: bool = True,
+    ) -> Any:
+        side_norm = side.upper().strip()
+        if side_norm != "LONG":
+            raise RuntimeError("Bithumb spot supports LONG only")
+        return self.execute_market_buy(
+            ticker=ticker,
+            quantity=quantity,
+            price_krw=notional,
+            order_retry_count=order_retry_count,
+            order_retry_delay_sec=order_retry_delay_sec,
+            order_fill_wait_sec=order_fill_wait_sec,
+            order_fill_poll_sec=order_fill_poll_sec,
+            cancel_unfilled_before_retry=cancel_unfilled_before_retry,
+        )
+
+    def execute_exit(
+        self,
+        ticker: str,
+        side: str,
+        quantity: float,
+        order_retry_count: int = 2,
+        order_retry_delay_sec: float = 0.8,
+        order_fill_wait_sec: float = 2.5,
+        order_fill_poll_sec: float = 0.5,
+        cancel_unfilled_before_retry: bool = True,
+    ) -> Any:
+        _ = side
+        return self.execute_market_sell(
+            ticker=ticker,
+            quantity=quantity,
+            order_retry_count=order_retry_count,
+            order_retry_delay_sec=order_retry_delay_sec,
+            order_fill_wait_sec=order_fill_wait_sec,
+            order_fill_poll_sec=order_fill_poll_sec,
+            cancel_unfilled_before_retry=cancel_unfilled_before_retry,
+        )
 
     def get_top_volume_tickers(self, limit: int = 5, quote: str = "KRW") -> list[str]:
         """Return top tickers by 24h quote volume from ticker snapshot."""
