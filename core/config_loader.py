@@ -21,6 +21,8 @@ class AppConfig:
     log_performance: bool = True
     performance_log_interval_sec: int = 300
     performance_baseline_path: str = "data/performance_baseline.json"
+    fx_refresh_interval_sec: int = 600
+    usdkrw_fallback: float = 1350.0
 
 
 @dataclass(slots=True)
@@ -161,6 +163,7 @@ class NotificationConfig:
     notify_on_order_failure: bool = True
     notify_on_risk_exit: bool = True
     notify_on_news_refresh: bool = False
+    notify_on_asset_report: bool = True
 
 
 @dataclass(slots=True)

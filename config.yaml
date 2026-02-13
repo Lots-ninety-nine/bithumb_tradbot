@@ -11,6 +11,8 @@ app:
   log_performance: true
   performance_log_interval_sec: 300
   performance_baseline_path: data/performance_baseline.json
+  fx_refresh_interval_sec: 600
+  usdkrw_fallback: 1350.0
 
 exchange:
   sample_ticker: BTCUSDT
@@ -133,3 +135,4 @@ notification:
   notify_on_order_failure: true
   notify_on_risk_exit: true
   notify_on_news_refresh: false
+  notify_on_asset_report: true

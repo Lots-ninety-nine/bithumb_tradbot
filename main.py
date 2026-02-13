@@ -12,6 +12,11 @@ from pathlib import Path
 import time
 from typing import Any
 
+try:
+    import requests
+except Exception:  # pragma: no cover
+    requests = None
+
 from core.config_loader import BotConfig, load_bot_config
 from core.bybit_exchange import BybitExchange
 from core.notifier import DiscordNotifier, NotifyEvent
@@ -56,8 +61,14 @@ class TradingOrchestrator:
         self.log_api_usage = bool(config.app.log_api_usage)
         self.log_performance = bool(config.app.log_performance)
         self.performance_log_interval_sec = int(config.app.performance_log_interval_sec)
+        self.fx_refresh_interval_sec = max(60, int(config.app.fx_refresh_interval_sec))
+        self.usdkrw_fallback = float(config.app.usdkrw_fallback)
+        self._fx_session = requests.Session() if requests is not None else None
+        self._cached_usdkrw_rate: float | None = None
+        self._next_fx_refresh_at = 0.0
         self._started_notified = False
         self._next_performance_log_at = 0.0
+        self._next_asset_notify_at = 0.0
         self.position_sync_interval_sec = max(60, self.loop_interval_sec * 3)
         self._next_position_sync_at = 0.0
 
@@ -385,6 +396,7 @@ class TradingOrchestrator:
             self._check_open_positions()
         finally:
             self.log_performance_summary_if_needed()
+            self.notify_asset_report_if_needed()
             self.log_api_usage_summary(reset=True)
 
     def _sync_remote_positions(self, force: bool = False) -> None:
@@ -789,6 +801,49 @@ class TradingOrchestrator:
             snapshot.pnl_pct,
         )
 
+    def notify_asset_report_if_needed(self, force: bool = False) -> None:
+        if not self.config.notification.notify_on_asset_report:
+            return
+        if self.notifier is None:
+            return
+        now_ts = time.time()
+        interval_sec = max(60, self.performance_log_interval_sec)
+        if not force and now_ts < self._next_asset_notify_at:
+            return
+        self._next_asset_notify_at = now_ts + interval_sec
+
+        snapshot = self._get_performance_snapshot()
+        if snapshot is None:
+            return
+
+        fields = [
+            DiscordNotifier.field("start_at", snapshot.started_at.isoformat(), inline=False),
+            DiscordNotifier.field("asset", f"{snapshot.current_krw:.4f}{self.asset_unit}", inline=True),
+            DiscordNotifier.field(
+                "total_pnl",
+                f"{snapshot.pnl_krw:+.4f}{self.asset_unit} ({snapshot.pnl_pct:+.2f}%)",
+                inline=True,
+            ),
+        ]
+        if self.asset_unit.upper() == "USDT":
+            rate = self._get_usdkrw_rate()
+            fields.extend(
+                [
+                    DiscordNotifier.field("usdt_krw", f"{rate:,.2f}", inline=True),
+                    DiscordNotifier.field("asset_krw", f"{snapshot.current_krw * rate:,.0f}KRW", inline=True),
+                    DiscordNotifier.field("pnl_krw", f"{snapshot.pnl_krw * rate:+,.0f}KRW", inline=True),
+                ]
+            )
+
+        self._notify(
+            NotifyEvent(
+                title="Asset Snapshot",
+                description="현재 자산 요약",
+                level="info",
+                fields=fields,
+            )
+        )
+
     def _get_performance_snapshot(self) -> PerformanceSnapshot | None:
         if hasattr(self.exchange, "get_total_asset"):
             total_krw = self.exchange.get_total_asset()
@@ -802,7 +857,7 @@ class TradingOrchestrator:
         snapshot = self._get_performance_snapshot()
         if snapshot is None:
             return []
-        return [
+        fields: list[dict[str, object]] = [
             DiscordNotifier.field("start_at", snapshot.started_at.isoformat(), inline=False),
             DiscordNotifier.field("start_asset", f"{snapshot.baseline_krw:.4f}{self.asset_unit}", inline=True),
             DiscordNotifier.field("current_asset", f"{snapshot.current_krw:.4f}{self.asset_unit}", inline=True),
@@ -812,6 +867,41 @@ class TradingOrchestrator:
                 inline=False,
             ),
         ]
+        if self.asset_unit.upper() == "USDT":
+            rate = self._get_usdkrw_rate()
+            fields.extend(
+                [
+                    DiscordNotifier.field("usdt_krw", f"{rate:,.2f}", inline=True),
+                    DiscordNotifier.field("start_asset_krw", f"{snapshot.baseline_krw * rate:,.0f}KRW", inline=True),
+                    DiscordNotifier.field("current_asset_krw", f"{snapshot.current_krw * rate:,.0f}KRW", inline=True),
+                    DiscordNotifier.field("total_pnl_krw", f"{snapshot.pnl_krw * rate:+,.0f}KRW", inline=False),
+                ]
+            )
+        return fields
+
+    def _get_usdkrw_rate(self) -> float:
+        now_ts = time.time()
+        if self._cached_usdkrw_rate is not None and now_ts < self._next_fx_refresh_at:
+            return self._cached_usdkrw_rate
+
+        self._next_fx_refresh_at = now_ts + self.fx_refresh_interval_sec
+        rate = self.usdkrw_fallback
+        if self._fx_session is not None:
+            try:
+                response = self._fx_session.get(
+                    "https://api.exchangerate.host/latest",
+                    params={"base": "USD", "symbols": "KRW"},
+                    timeout=4,
+                )
+                payload = response.json() if response.status_code < 500 else {}
+                parsed = float(((payload.get("rates") or {}).get("KRW")) or 0.0)
+                if parsed > 0:
+                    rate = parsed
+            except Exception:
+                pass
+
+        self._cached_usdkrw_rate = rate
+        return rate
 
     def _pick_frame(self, candles: dict[str, Any]):
         for interval in self.frame_priority:
