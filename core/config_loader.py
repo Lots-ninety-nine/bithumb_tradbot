@@ -88,7 +88,10 @@ class StrategyConfig:
 
 @dataclass(slots=True)
 class LLMConfig:
-    model_name: str = "gemini-2.5-flash"
+    provider: str = "openai"
+    model_name: str = "gpt-4o-mini"
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_timeout_sec: float = 12.0
     min_buy_confidence: float = 0.7
     min_sell_confidence: float = 0.7
     max_dead_cat_risk: float = 0.55

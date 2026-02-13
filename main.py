@@ -61,7 +61,7 @@ class TradingOrchestrator:
         self.position_sync_interval_sec = max(60, self.loop_interval_sec * 3)
         self._next_position_sync_at = 0.0
 
-        from core.llm_analyzer import GeminiAnalyzer
+        from core.llm_analyzer import LLMAnalyzer
         from core.risk_manager import RiskManager
         from core.advanced_signals import evaluate_advanced_signals
         from core.strategy import HardRuleConfig, TechnicalSignal, evaluate_hard_rule, evaluate_hard_rule_short
@@ -103,10 +103,13 @@ class TradingOrchestrator:
         )
         self.news_refresh_interval_sec = int(config.news.refresh_interval_sec)
         self._next_news_refresh_at = 0.0
-        self.analyzer = GeminiAnalyzer(
+        self.analyzer = LLMAnalyzer(
+            provider=config.llm.provider,
             model_name=config.llm.model_name,
             min_buy_confidence=config.llm.min_buy_confidence,
             min_sell_confidence=config.llm.min_sell_confidence,
+            openai_base_url=config.llm.openai_base_url,
+            openai_timeout_sec=config.llm.openai_timeout_sec,
         )
         self.risk = RiskManager(
             seed_krw=config.trade.seed_capital,

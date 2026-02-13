@@ -14,9 +14,13 @@
 ```env
 BYBIT_API_KEY=...
 BYBIT_API_SECRET=...
-GEMINI_API_KEY=...
+OPENAI_API_KEY=...
 DISCORD_WEBHOOK_URL=...
 ```
+
+`Gemini`를 쓰고 싶으면:
+- `llm.provider: gemini`
+- `.env`에 `GEMINI_API_KEY=...`
 
 ## 2. 실행 방법
 
@@ -75,9 +79,13 @@ DISCORD_WEBHOOK_URL=...
 - `risk.trailing_gap_pct`: 트레일링 폭
 
 ### 전략/LLM
+- `llm.provider`: `openai` 또는 `gemini`
 - `strategy.required_signal_count`: 하드룰 최소 충족 개수
 - `strategy.rsi_buy_threshold`, `strategy.rsi_sell_threshold`
 - `strategy.use_macd_golden_cross`, `strategy.use_macd_dead_cross`
+- `llm.model_name`: 예) `gpt-4o-mini`
+- `llm.openai_base_url`: 기본 `https://api.openai.com/v1`
+- `llm.openai_timeout_sec`: OpenAI 요청 타임아웃
 - `llm.min_buy_confidence`: 롱 LLM 신뢰도 하한
 - `llm.min_sell_confidence`: 숏 LLM 신뢰도 하한
 - `llm.max_dead_cat_risk`: 데드캣 리스크 상한
