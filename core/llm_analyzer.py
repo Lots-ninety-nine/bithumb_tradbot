@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 try:
@@ -33,7 +34,11 @@ class GeminiAnalyzer:
     """Gemini based market context analyzer."""
 
     def __init__(self, model_name: str = "gemini-1.5-flash", min_buy_confidence: float = 0.7) -> None:
-        load_dotenv()
+        env_path = Path(__file__).resolve().parents[1] / ".env"
+        if env_path.exists():
+            load_dotenv(dotenv_path=env_path)
+        else:
+            load_dotenv()
         self.model_name = model_name
         self.min_buy_confidence = min_buy_confidence
         self._model = None

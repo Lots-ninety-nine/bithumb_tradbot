@@ -45,6 +45,7 @@ except Exception:  # pragma: no cover - optional dependency import guard
 
 
 LOGGER = logging.getLogger(__name__)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(slots=True)
@@ -61,7 +62,11 @@ class ExchangeCredentials:
 
 def load_credentials(config_path: str = "config.yaml") -> ExchangeCredentials:
     """Load credentials from environment first, then optional yaml config."""
-    load_dotenv()
+    env_path = PROJECT_ROOT / ".env"
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path)
+    else:
+        load_dotenv()
 
     api_key = os.getenv("BITHUMB_API_KEY", "").strip()
     secret_key = os.getenv("BITHUMB_SECRET_KEY", "").strip()
