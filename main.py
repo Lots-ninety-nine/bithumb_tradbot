@@ -32,6 +32,7 @@ class TradingOrchestrator:
         max_spread_bps: float = 35.0,
         min_order_krw: float = 5000.0,
         max_consecutive_errors: int = 5,
+        enable_official_orders: bool = False,
     ) -> None:
         self.loop_interval_sec = loop_interval_sec
         self.dry_run = dry_run
@@ -46,7 +47,7 @@ class TradingOrchestrator:
         from data.rag_store import SimpleRAGStore
 
         self._evaluate_hard_rule = evaluate_hard_rule
-        self.exchange = BithumbExchange()
+        self.exchange = BithumbExchange(enable_official_orders=enable_official_orders)
         self.collector = MarketDataCollector(exchange=self.exchange)
         self.rag_store = SimpleRAGStore()
         self.analyzer = GeminiAnalyzer(
@@ -82,7 +83,8 @@ class TradingOrchestrator:
             if not signal.is_buy_candidate:
                 continue
 
-            news_context = self.rag_store.query_for_trade(ticker=ticker, limit=3)
+            asset_symbol = ticker.split("-")[-1] if "-" in ticker else ticker
+            news_context = self.rag_store.query_for_trade(ticker=asset_symbol, limit=3)
             recent_frame = frame.tail(40).reset_index()
             if len(recent_frame.columns) > 0:
                 recent_frame = recent_frame.rename(columns={recent_frame.columns[0]: "timestamp"})
@@ -309,6 +311,11 @@ def parse_args() -> argparse.Namespace:
         default=5,
         help="Loop cooldown trigger threshold for consecutive exceptions.",
     )
+    parser.add_argument(
+        "--enable-official-orders",
+        action="store_true",
+        help="Allow REST order execution (v2 beta endpoints). Use only after live verification.",
+    )
     return parser.parse_args()
 
 
@@ -383,6 +390,7 @@ def main() -> None:
         max_spread_bps=args.max_spread_bps,
         min_order_krw=args.min_order_krw,
         max_consecutive_errors=args.max_consecutive_errors,
+        enable_official_orders=args.enable_official_orders,
     )
     if args.run_once:
         orchestrator.run_once()
