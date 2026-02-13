@@ -43,6 +43,10 @@ class TradingOrchestrator:
         self.order_fill_poll_sec = float(config.trade.order_fill_poll_sec)
         self.cancel_unfilled_before_retry = bool(config.trade.cancel_unfilled_before_retry)
         self.max_dead_cat_risk = float(config.llm.max_dead_cat_risk)
+        self.allow_hold_buy = bool(config.llm.allow_hold_buy)
+        self.hold_buy_min_confidence = float(config.llm.hold_buy_min_confidence)
+        self.hold_buy_max_dead_cat_risk = float(config.llm.hold_buy_max_dead_cat_risk)
+        self.hold_buy_min_advanced_score = float(config.llm.hold_buy_min_advanced_score)
         self.frame_priority = tuple(config.strategy.interval_priority)
         self.log_api_usage = bool(config.app.log_api_usage)
         self._started_notified = False
@@ -163,7 +167,29 @@ class TradingOrchestrator:
                     asdict(llm_decision),
                 )
 
-                if not self.analyzer.allow_buy(llm_decision, max_dead_cat_risk=self.max_dead_cat_risk):
+                allow_buy = self.analyzer.allow_buy(
+                    llm_decision,
+                    max_dead_cat_risk=self.max_dead_cat_risk,
+                )
+                if (
+                    not allow_buy
+                    and self._allow_hold_buy_override(
+                        decision=llm_decision,
+                        advanced_score=advanced.total_score,
+                    )
+                ):
+                    allow_buy = True
+                    LOGGER.info(
+                        "%s HOLD override accepted: conf=%.2f dead_cat=%.2f adv=%.3f",
+                        ticker,
+                        llm_decision.confidence,
+                        llm_decision.dead_cat_bounce_risk
+                        if llm_decision.dead_cat_bounce_risk is not None
+                        else -1.0,
+                        advanced.total_score,
+                    )
+
+                if not allow_buy:
                     LOGGER.info(
                         "%s LLM buy gate blocked decision=%s confidence=%.2f dead_cat=%.2f",
                         ticker,
@@ -403,6 +429,24 @@ class TradingOrchestrator:
         if not ok:
             LOGGER.warning("Notification send failed: title=%s", event.title)
         return ok
+
+    def _allow_hold_buy_override(self, decision: Any, advanced_score: float) -> bool:
+        if not self.allow_hold_buy:
+            return False
+        if str(getattr(decision, "decision", "")).upper().strip() != "HOLD":
+            return False
+
+        confidence = float(getattr(decision, "confidence", 0.0))
+        if confidence < self.hold_buy_min_confidence:
+            return False
+
+        dead_cat = getattr(decision, "dead_cat_bounce_risk", None)
+        if dead_cat is not None and float(dead_cat) > self.hold_buy_max_dead_cat_risk:
+            return False
+
+        if float(advanced_score) < self.hold_buy_min_advanced_score:
+            return False
+        return True
 
     def _resolve_slot_budget_krw(self) -> float:
         fallback = self.risk.slot_budget_krw

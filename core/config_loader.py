@@ -72,6 +72,10 @@ class LLMConfig:
     model_name: str = "gemini-2.5-flash"
     min_buy_confidence: float = 0.7
     max_dead_cat_risk: float = 0.55
+    allow_hold_buy: bool = True
+    hold_buy_min_confidence: float = 0.65
+    hold_buy_max_dead_cat_risk: float = 0.85
+    hold_buy_min_advanced_score: float = 1.5
 
 
 @dataclass(slots=True)

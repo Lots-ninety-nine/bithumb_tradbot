@@ -48,6 +48,10 @@ BITHUMB_API_BASE_URL=https://api.bithumb.com
 - `llm.min_buy_confidence`: Gemini 신뢰도 하한
 - `llm.max_dead_cat_risk`: 데드캣 리스크 허용치 상한
 - `strategy.required_signal_count`: 하드룰 충족 최소 개수(3개 지표 중)
+- `llm.allow_hold_buy`: Gemini가 HOLD여도 조건부 매수 허용 여부
+- `llm.hold_buy_min_confidence`: HOLD 조건부 매수 최소 confidence
+- `llm.hold_buy_max_dead_cat_risk`: HOLD 조건부 매수 데드캣 리스크 상한
+- `llm.hold_buy_min_advanced_score`: HOLD 조건부 매수 최소 고급점수
 
 ### 시장/체결 안전장치
 - `trade.max_spread_bps`: 스프레드 허용치 (bps)
