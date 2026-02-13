@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BOT_DIR="${1:-$HOME/bithumb_tradbot}"
+BOT_DIR="${1:-$HOME/bybit_tradbot}"
 BOT_USER="$(whoami)"
-SERVICE_NAME="bithumb-tradbot"
+SERVICE_NAME="bybit-tradbot"
 SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
 PYTHON_BIN="${BOT_DIR}/.venv/bin/python"
 PIP_BIN="${BOT_DIR}/.venv/bin/pip"
 
 if [[ ! -d "${BOT_DIR}" ]]; then
   echo "[ERROR] BOT_DIR not found: ${BOT_DIR}" >&2
-  echo "Usage: $0 /absolute/path/to/bithumb_tradbot" >&2
+  echo "Usage: $0 /absolute/path/to/bybit_tradbot" >&2
   exit 1
 fi
 
@@ -48,7 +48,7 @@ fi
 echo "[6/7] Install systemd service"
 sudo tee "${SERVICE_PATH}" > /dev/null <<SERVICE
 [Unit]
-Description=Bithumb Tradbot
+Description=Bybit Tradbot
 After=network-online.target
 Wants=network-online.target
 

@@ -1,0 +1,17 @@
+[Unit]
+Description=Bybit Tradbot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/bybit_tradbot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/bybit_tradbot/.venv/bin/python /home/ubuntu/bybit_tradbot/main.py --config /home/ubuntu/bybit_tradbot/config.yaml
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
